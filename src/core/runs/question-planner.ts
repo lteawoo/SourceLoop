@@ -1,0 +1,281 @@
+import { mkdir, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { loadWorkspace } from "../workspace/load-workspace.js";
+import { getRunPaths } from "../vault/paths.js";
+import { questionBatchSchema, runIndexSchema, type PlannedQuestion, type QARunIndex, type QuestionBatch } from "../../schemas/run.js";
+import { toFrontmatterMarkdown } from "../ingest/frontmatter.js";
+import { writeJsonFile } from "../../lib/write-json.js";
+import { slugify } from "../../lib/slugify.js";
+import { loadNotebookBinding } from "./load-artifacts.js";
+import { loadTopic, refreshTopicArtifacts } from "../topics/manage-topics.js";
+import { getVaultPaths } from "../vault/paths.js";
+import path from "node:path";
+import { readFile, readdir } from "node:fs/promises";
+import { notebookBindingSchema } from "../../schemas/notebook.js";
+import { makeAliases, makeTags, normalizeObsidianText, summarizeQuestionTitle } from "../../lib/obsidian.js";
+
+export type CreateQuestionPlanInput = {
+  topic?: string;
+  topicId?: string;
+  notebookBindingId?: string;
+  objective?: string;
+  cwd?: string;
+};
+
+export type CreateQuestionPlanResult = {
+  run: QARunIndex;
+  batch: QuestionBatch;
+  runDir: string;
+};
+
+export async function createQuestionPlan(
+  input: CreateQuestionPlanInput
+): Promise<CreateQuestionPlanResult> {
+  const workspace = await loadWorkspace(input.cwd);
+  const topicRecord = input.topicId ? await loadTopic(input.topicId, input.cwd) : undefined;
+  const notebookBindingId =
+    input.notebookBindingId ??
+    (input.topicId ? await resolveNotebookBindingIdForTopic(workspace.rootDir, input.topicId) : undefined);
+
+  if (!notebookBindingId) {
+    throw new Error("Question planning requires a notebook binding. For the preferred flow, create a topic-bound notebook and plan by topic id.");
+  }
+
+  const { binding } = await loadNotebookBinding(notebookBindingId, input.cwd);
+  const timestamp = new Date();
+  const createdAt = timestamp.toISOString();
+  const topicName = normalizeObsidianText(topicRecord?.topic.name ?? input.topic ?? binding.topic);
+  const objective =
+    input.objective ??
+    topicRecord?.topic.goal ??
+    `Research ${topicName} through a planned NotebookLM Q&A run.`;
+  const intendedOutput = topicRecord?.topic.intendedOutput;
+  const questions = buildPlannedQuestions(topicName, objective, intendedOutput);
+  const questionFamilies = [...new Set(questions.map((question) => question.kind))];
+  const runId = buildRunId(topicName, timestamp);
+
+  const batch = questionBatchSchema.parse({
+    id: `batch-${runId}`,
+    type: "question_batch",
+    topic: topicName,
+    topicId: topicRecord?.topic.id,
+    notebookBindingId,
+    objective,
+    intendedOutput,
+    questionFamilies,
+    createdAt,
+    questions
+  });
+
+  const run = runIndexSchema.parse({
+    id: runId,
+    type: "qa_run",
+    topic: topicName,
+    topicId: topicRecord?.topic.id,
+    notebookBindingId,
+    questionBatchId: batch.id,
+    status: "planned",
+    createdAt,
+    updatedAt: createdAt,
+    completedQuestionIds: [],
+    outputArtifacts: []
+  });
+
+  const runPaths = getRunPaths(workspace, run.id);
+  await mkdir(runPaths.exchangesDir, { recursive: true });
+  await mkdir(runPaths.outputsDir, { recursive: true });
+
+  await writeJsonFile(runPaths.indexJsonPath, run);
+  await writeJsonFile(runPaths.questionsJsonPath, batch);
+  await writeFile(runPaths.indexMarkdownPath, buildRunIndexMarkdown(run), "utf8");
+  await writeFile(runPaths.questionsMarkdownPath, buildQuestionsMarkdown(batch), "utf8");
+  if (topicRecord?.topic.id) {
+    await refreshTopicArtifacts(topicRecord.topic.id, input.cwd);
+  }
+
+  return {
+    run,
+    batch,
+    runDir: runPaths.runDir
+  };
+}
+
+function buildRunId(topic: string, timestamp: Date): string {
+  const time = timestamp.toISOString().replace(/[:.]/g, "-");
+  return `run-${slugify(topic)}-${time}`;
+}
+
+export function buildPlannedQuestions(topic: string, objective: string, intendedOutput?: string): PlannedQuestion[] {
+  const prompts = [
+    {
+      kind: "core",
+      objective: `Identify the core concepts and framing for ${topic}.`,
+      prompt: `What are the core concepts, scope boundaries, and important definitions for ${topic}?`
+    },
+    {
+      kind: "structure",
+      objective: `Map the structure and major segments inside ${topic}.`,
+      prompt: `How is ${topic} structured into major segments, layers, or categories, and how do they relate to each other?`
+    },
+    {
+      kind: "deep_dive",
+      objective: `Find the major bottlenecks or constraints for ${topic}.`,
+      prompt: `What are the most important bottlenecks, constraints, or failure modes within ${topic}?`
+    },
+    {
+      kind: "deep_dive",
+      objective: `Identify structural risks or dependency constraints for ${topic}.`,
+      prompt: `What dependencies, hidden assumptions, or structural risks most affect outcomes in ${topic}?`
+    },
+    {
+      kind: "comparison",
+      objective: `Compare the major alternatives and trade-offs around ${topic}.`,
+      prompt: `What are the key alternatives, trade-offs, or contrasting approaches related to ${topic}?`
+    },
+    {
+      kind: "comparison",
+      objective: `Distinguish important sub-types or competing schools within ${topic}.`,
+      prompt: `Which competing approaches or schools of thought matter most within ${topic}, and when does each approach win or fail?`
+    },
+    {
+      kind: "execution",
+      objective: `Extract practical next steps for ${topic}.`,
+      prompt: `What practical steps, checklists, or execution guidance should someone follow for ${topic}${intendedOutput ? ` if the goal is ${intendedOutput}` : ""}?`
+    },
+    {
+      kind: "execution",
+      objective: `Connect the research topic to the intended human output.`,
+      prompt: `If someone wanted to turn ${topic} into ${intendedOutput ?? "a practical output"}, what structure or sequence would make the explanation most useful?`
+    },
+    {
+      kind: "evidence_gap",
+      objective: `Expose missing evidence and counterexamples around ${topic}.`,
+      prompt: `What evidence is missing, contested, or likely to be overstated in common narratives about ${topic}?`
+    },
+    {
+      kind: "evidence_gap",
+      objective: `Identify what would need verification before presenting ${topic} confidently.`,
+      prompt: `Which claims about ${topic} would require further verification, counterexamples, or direct source checking before reuse?`
+    }
+  ] as const;
+
+  return prompts.map((entry, index) => ({
+    id: `q${String(index + 1).padStart(2, "0")}-${randomUUID().replace(/-/g, "").slice(0, 6)}`,
+      kind: entry.kind,
+      prompt: entry.prompt,
+      objective: index === 0 ? objective : entry.objective,
+      order: index
+    }));
+}
+
+function buildRunIndexMarkdown(run: QARunIndex): string {
+  const topicTitle = normalizeObsidianText(run.topic, run.id);
+  return toFrontmatterMarkdown(
+    {
+      id: run.id,
+      type: "run",
+      title: `${topicTitle} Run`,
+      aliases: makeAliases(run.id),
+      tags: makeTags("sourceloop", "research", "run", run.status, run.executionMode),
+      topic: topicTitle,
+      topic_id: run.topicId,
+      notebook_binding_id: run.notebookBindingId,
+      question_batch_id: run.questionBatchId,
+      status: run.status,
+      execution_mode: run.executionMode,
+      attached_chrome_target_id: run.attachedChromeTargetId,
+      created_at: run.createdAt,
+      updated_at: run.updatedAt,
+      completed_question_ids: run.completedQuestionIds,
+      failure_reason: run.failureReason,
+      output_artifacts: run.outputArtifacts
+    },
+    `# ${topicTitle} Run
+
+## Run Summary
+
+- Topic: ${topicTitle}
+- Topic ID: ${run.topicId ?? "legacy-notebook-first"}
+- Status: ${run.status}
+- Notebook Binding: ${toMarkdownLink(run.notebookBindingId, `../../notebooks/${run.notebookBindingId}.md`)}
+- Attach Target: ${
+        run.attachedChromeTargetId
+          ? toMarkdownLink(run.attachedChromeTargetId, `../../chrome-targets/${run.attachedChromeTargetId}.md`)
+          : "unresolved"
+      }
+- Question Batch: ${toMarkdownLink("questions", "./questions.md")}`
+  );
+}
+
+function buildQuestionsMarkdown(batch: QuestionBatch): string {
+  const sections = batch.questions.flatMap((question) => [
+    `## ${summarizeQuestionTitle(question.prompt, question.id)}`,
+    "",
+    `- Question ID: ${question.id}`,
+    `- Kind: ${question.kind}`,
+    `- Objective: ${question.objective}`,
+    `- Future Exchange: ${toMarkdownLink(summarizeQuestionTitle(question.prompt, question.id), `./exchanges/${question.id}.md`)}`,
+    "",
+    question.prompt,
+    ""
+  ]);
+  const topicTitle = normalizeObsidianText(batch.topic, batch.id);
+
+  return toFrontmatterMarkdown(
+    {
+      id: batch.id,
+      type: "questions",
+      title: `${topicTitle} Questions`,
+      aliases: makeAliases(batch.id),
+      tags: makeTags("sourceloop", "research", "questions", ...batch.questionFamilies),
+      topic: topicTitle,
+      topic_id: batch.topicId,
+      notebook_binding_id: batch.notebookBindingId,
+      objective: batch.objective,
+      intended_output: batch.intendedOutput,
+      question_families: batch.questionFamilies,
+      created_at: batch.createdAt
+    },
+    [
+      `# ${topicTitle} Questions`,
+      "",
+      `## Context`,
+      `- Topic: ${topicTitle}`,
+      `- Topic ID: ${batch.topicId ?? "legacy-notebook-first"}`,
+      `- Topic Artifact: ${batch.topicId ? toMarkdownLink(batch.topicId, `../../topics/${batch.topicId}/index.md`) : "none"}`,
+      `- Notebook Binding: ${toMarkdownLink(batch.notebookBindingId, `../../notebooks/${batch.notebookBindingId}.md`)}`,
+      "",
+      ...sections
+    ].join("\n")
+  );
+}
+
+async function resolveNotebookBindingIdForTopic(rootDir: string, topicId: string): Promise<string> {
+  const workspace = await loadWorkspace(rootDir);
+  const vault = getVaultPaths(workspace);
+  const entries = await readdir(vault.notebooksDir);
+  const notebookFiles = entries.filter((entry) => entry.endsWith(".json"));
+  const notebooks = await Promise.all(
+    notebookFiles.map(async (entry) => notebookBindingSchema.parse(JSON.parse(await readFile(path.join(vault.notebooksDir, entry), "utf8"))))
+  );
+  const matches = notebooks.filter((binding) => binding.topicId === topicId);
+
+  if (matches.length === 0) {
+    throw new Error(`Topic ${topicId} does not have a bound notebook. Bind a NotebookLM notebook to this topic first.`);
+  }
+
+  if (matches.length > 1) {
+    throw new Error(`Topic ${topicId} has multiple notebook bindings. Select one explicitly with --notebook.`);
+  }
+
+  const [match] = matches;
+  if (!match) {
+    throw new Error(`Topic ${topicId} does not have a usable notebook binding.`);
+  }
+
+  return match.id;
+}
+
+function toMarkdownLink(label: string, targetPath: string): string {
+  return `[${label}](${targetPath})`;
+}
