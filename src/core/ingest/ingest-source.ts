@@ -8,6 +8,7 @@ import { toFrontmatterMarkdown } from "./frontmatter.js";
 import { loadTopic, refreshTopicArtifacts } from "../topics/manage-topics.js";
 import { writeJsonFile } from "../../lib/write-json.js";
 import { makeAliases, makeTags, normalizeObsidianText } from "../../lib/obsidian.js";
+import { getSourceNote } from "../vault/notes.js";
 
 export type IngestSourceInput = {
   input: string;
@@ -90,6 +91,7 @@ async function ingestUrl(inputUrl: string, capturedAt: string, topicId?: string)
 }
 
 async function writeSourceArtifact(workspaceRoot: string, draft: DraftSource): Promise<string> {
+  const topicRecord = draft.topicId ? await loadTopic(draft.topicId, workspaceRoot) : undefined;
   const source = sourceDocumentSchema.parse({
     id: draft.id,
     type: draft.type,
@@ -104,24 +106,25 @@ async function writeSourceArtifact(workspaceRoot: string, draft: DraftSource): P
 
   const markdown = toFrontmatterMarkdown(
     {
-      id: source.id,
       type: "source",
       title: normalizeObsidianText(source.title, source.id),
       aliases: makeAliases(source.id),
       tags: makeTags("sourceloop", "source", source.type),
-      source_uri: source.sourceUri,
-      topic_id: source.topicId,
-      author: source.author,
-      captured_at: source.capturedAt,
-      topic_tags: source.topicTags,
-      language: source.language
+      ...(topicRecord ? { topic: normalizeObsidianText(topicRecord.topic.name, topicRecord.topic.id) } : {}),
+      source_kind: source.type,
+      ...(source.author ? { author: source.author } : {}),
+      ...(source.language ? { language: source.language } : {}),
+      created: source.capturedAt,
+      updated: source.capturedAt
     },
     draft.body
   );
 
+  const workspace = await loadWorkspace(workspaceRoot);
+  const note = getSourceNote(workspace, source);
   const sourcesDir = path.join(workspaceRoot, "vault/sources");
   await mkdir(sourcesDir, { recursive: true });
-  const markdownPath = path.join(sourcesDir, `${source.id}.md`);
+  const markdownPath = note.absolutePath;
   const jsonPath = path.join(sourcesDir, `${source.id}.json`);
   await writeFile(markdownPath, markdown, "utf8");
   await writeJsonFile(jsonPath, source);

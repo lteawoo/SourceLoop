@@ -2,6 +2,7 @@ import { access, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { loadWorkspace } from "../workspace/load-workspace.js";
 import { getTopicPaths, getVaultPaths } from "../vault/paths.js";
+import { getNotebookNote, getRunIndexNote, getSourceNote, getTopicCorpusNote, getTopicIndexNote, toWikiLink } from "../vault/notes.js";
 import { writeJsonFile } from "../../lib/write-json.js";
 import { toFrontmatterMarkdown } from "../ingest/frontmatter.js";
 import { slugify } from "../../lib/slugify.js";
@@ -63,7 +64,7 @@ export async function createTopic(input: CreateTopicInput): Promise<CreateTopicR
     updatedAt: now
   });
 
-  await persistTopicArtifacts(topicPaths, topic, corpus);
+  await persistTopicArtifacts(workspace, topicPaths, topic, corpus);
   return { topic, corpus, topicDir: topicPaths.topicDir };
 }
 
@@ -139,7 +140,7 @@ export async function refreshTopicArtifacts(topicId: string, cwd?: string): Prom
     updatedAt: now
   });
 
-  await persistTopicArtifacts(topicPaths, topic, corpus);
+  await persistTopicArtifacts(workspace, topicPaths, topic, corpus);
   return { topic, corpus };
 }
 
@@ -168,88 +169,103 @@ function deriveTopicStatus(input: {
 }
 
 async function persistTopicArtifacts(
+  workspace: Awaited<ReturnType<typeof loadWorkspace>>,
   topicPaths: ReturnType<typeof getTopicPaths>,
   topic: ResearchTopic,
   corpus: TopicCorpusManifest
 ): Promise<void> {
+  const topicNote = getTopicIndexNote(workspace, topic);
+  const corpusNote = getTopicCorpusNote(workspace, topic);
   await mkdir(topicPaths.topicDir, { recursive: true });
   await writeJsonFile(topicPaths.indexJsonPath, topic);
   await writeJsonFile(topicPaths.corpusJsonPath, corpus);
-  await writeFile(topicPaths.indexMarkdownPath, buildTopicMarkdown(topic), "utf8");
-  await writeFile(topicPaths.corpusMarkdownPath, buildCorpusMarkdown(topic, corpus), "utf8");
+  await writeFile(topicNote.absolutePath, buildTopicMarkdown(workspace, topic, corpusNote.absolutePath), "utf8");
+  await writeFile(corpusNote.absolutePath, await buildCorpusMarkdown(workspace, topic, corpus), "utf8");
 }
 
-function buildTopicMarkdown(topic: ResearchTopic): string {
+function buildTopicMarkdown(
+  workspace: Awaited<ReturnType<typeof loadWorkspace>>,
+  topic: ResearchTopic,
+  corpusNotePath: string
+): string {
   const title = normalizeObsidianText(topic.name, topic.id);
   return toFrontmatterMarkdown(
     {
-      id: topic.id,
       type: "topic",
       title,
       aliases: makeAliases(topic.id),
       tags: makeTags("sourceloop", "research", "topic", topic.status),
-      name: title,
-      goal: topic.goal,
-      intended_output: topic.intendedOutput,
+      ...(topic.goal ? { goal: topic.goal } : {}),
+      ...(topic.intendedOutput ? { output: topic.intendedOutput } : {}),
       status: topic.status,
-      created_at: topic.createdAt,
-      updated_at: topic.updatedAt
+      created: topic.createdAt,
+      updated: topic.updatedAt
     },
     `# ${title}
 
 ## Research Goal
 ${topic.goal ?? "No explicit research goal provided."}
 
-## Intended Output
+## Output Hint
 ${topic.intendedOutput ?? "No output hint provided."}
 
 ## Status
 - ${topic.status}
 
 ## Linked Artifacts
-- ${toMarkdownLink("Corpus", "./corpus.md")}`
+- ${toWikiLink(workspace, corpusNotePath, "Corpus")}`
   );
 }
 
-function buildCorpusMarkdown(topic: ResearchTopic, corpus: TopicCorpusManifest): string {
+async function buildCorpusMarkdown(
+  workspace: Awaited<ReturnType<typeof loadWorkspace>>,
+  topic: ResearchTopic,
+  corpus: TopicCorpusManifest
+): Promise<string> {
   const title = `${normalizeObsidianText(topic.name, topic.id)} Corpus`;
+  const vault = getVaultPaths(workspace);
+  const [sources, notebooks, runs] = await Promise.all([
+    loadSourceArtifacts(vault.sourcesDir),
+    loadNotebookBindings(vault.notebooksDir),
+    loadRunIndexes(vault.runsDir)
+  ]);
+  const sourceLinks = corpus.sourceIds
+    .map((id) => sources.find((source) => source.id === id))
+    .filter((source): source is (typeof sources)[number] => Boolean(source))
+    .map((source) => `- ${toWikiLink(workspace, getSourceNote(workspace, source).absolutePath, normalizeObsidianText(source.title, source.id))}`)
+    .join("\n");
+  const notebookLinks = corpus.notebookBindingIds
+    .map((id) => notebooks.find((binding) => binding.id === id))
+    .filter((binding): binding is (typeof notebooks)[number] => Boolean(binding))
+    .map((binding) => `- ${toWikiLink(workspace, getNotebookNote(workspace, binding).absolutePath, normalizeObsidianText(binding.name, binding.id))}`)
+    .join("\n");
+  const runLinks = corpus.runIds
+    .map((id) => runs.find((run) => run.id === id))
+    .filter((run): run is (typeof runs)[number] => Boolean(run))
+    .map((run) => `- ${toWikiLink(workspace, getRunIndexNote(workspace, run).absolutePath, `${normalizeObsidianText(run.topic, run.id)} Run`)}`)
+    .join("\n");
+
   return toFrontmatterMarkdown(
     {
-      id: corpus.id,
       type: "corpus",
       title,
       aliases: makeAliases(corpus.id),
       tags: makeTags("sourceloop", "research", "corpus"),
-      topic_id: corpus.topicId,
-      source_ids: corpus.sourceIds,
-      notebook_binding_ids: corpus.notebookBindingIds,
-      run_ids: corpus.runIds,
-      created_at: corpus.createdAt,
-      updated_at: corpus.updatedAt
+      topic: normalizeObsidianText(topic.name, topic.id),
+      created: corpus.createdAt,
+      updated: corpus.updatedAt
     },
     `# ${title}
 
 ## Sources
-${renderList(corpus.sourceIds, "../../sources", ".md")}
+${sourceLinks || "- none"}
 
 ## Notebook Bindings
-${renderList(corpus.notebookBindingIds, "../../notebooks", ".md")}
+${notebookLinks || "- none"}
 
 ## Runs
-${renderList(corpus.runIds, "../../runs", "/index.md")}`
+${runLinks || "- none"}`
   );
-}
-
-function renderList(ids: string[], basePath: string, suffix: string): string {
-  if (ids.length === 0) {
-    return "- none";
-  }
-
-  return ids.map((id) => `- ${toMarkdownLink(id, `${basePath}/${id}${suffix}`)}`).join("\n");
-}
-
-function toMarkdownLink(label: string, targetPath: string): string {
-  return `[${label}](${targetPath})`;
 }
 
 async function loadSourceArtifacts(sourcesDir: string) {

@@ -122,7 +122,7 @@ describe("ingestSource", () => {
     const refreshed = await loadTopic(topic.topic.id, workspaceRoot);
 
     expect(result.source.topicId).toBe(topic.topic.id);
-    expect(written).toContain(`topic_id: ${topic.topic.id}`);
+    expect(written).toContain('topic: "AI agents market"');
     expect(refreshed.topic.status).toBe("collecting_sources");
     expect(refreshed.corpus.sourceIds).toContain(result.source.id);
   });

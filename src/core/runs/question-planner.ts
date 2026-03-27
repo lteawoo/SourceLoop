@@ -8,11 +8,14 @@ import { writeJsonFile } from "../../lib/write-json.js";
 import { slugify } from "../../lib/slugify.js";
 import { loadNotebookBinding } from "./load-artifacts.js";
 import { loadTopic, refreshTopicArtifacts } from "../topics/manage-topics.js";
+import { loadChromeAttachTarget } from "../attach/manage-targets.js";
 import { getVaultPaths } from "../vault/paths.js";
 import path from "node:path";
 import { readFile, readdir } from "node:fs/promises";
 import { notebookBindingSchema } from "../../schemas/notebook.js";
 import { makeAliases, makeTags, normalizeObsidianText, summarizeQuestionTitle } from "../../lib/obsidian.js";
+import { getExchangeNote, getNotebookNote, getQuestionsNote, getRunIndexNote, getTopicIndexNote, toWikiLink } from "../vault/notes.js";
+import { buildRunIndexMarkdown } from "./render-run-note.js";
 
 export type CreateQuestionPlanInput = {
   topic?: string;
@@ -26,6 +29,8 @@ export type CreateQuestionPlanResult = {
   run: QARunIndex;
   batch: QuestionBatch;
   runDir: string;
+  runMarkdownPath: string;
+  questionsMarkdownPath: string;
 };
 
 export async function createQuestionPlan(
@@ -82,13 +87,28 @@ export async function createQuestionPlan(
   });
 
   const runPaths = getRunPaths(workspace, run.id);
+  const runNote = getRunIndexNote(workspace, run);
+  const questionsNote = getQuestionsNote(workspace, batch);
+  const attachTarget = binding.attachTargetId
+    ? (await loadChromeAttachTarget(binding.attachTargetId, input.cwd).catch(() => undefined))?.target
+    : undefined;
   await mkdir(runPaths.exchangesDir, { recursive: true });
   await mkdir(runPaths.outputsDir, { recursive: true });
 
   await writeJsonFile(runPaths.indexJsonPath, run);
   await writeJsonFile(runPaths.questionsJsonPath, batch);
-  await writeFile(runPaths.indexMarkdownPath, buildRunIndexMarkdown(run), "utf8");
-  await writeFile(runPaths.questionsMarkdownPath, buildQuestionsMarkdown(batch), "utf8");
+  await writeFile(
+    runNote.absolutePath,
+    buildRunIndexMarkdown({
+      workspace,
+      run,
+      batch,
+      binding,
+      ...(attachTarget ? { attachTarget } : {})
+    }),
+    "utf8"
+  );
+  await writeFile(questionsNote.absolutePath, buildQuestionsMarkdown(workspace, batch, binding), "utf8");
   if (topicRecord?.topic.id) {
     await refreshTopicArtifacts(topicRecord.topic.id, input.cwd);
   }
@@ -96,7 +116,9 @@ export async function createQuestionPlan(
   return {
     run,
     batch,
-    runDir: runPaths.runDir
+    runDir: runPaths.runDir,
+    runMarkdownPath: runNote.absolutePath,
+    questionsMarkdownPath: questionsNote.absolutePath
   };
 }
 
@@ -168,82 +190,61 @@ export function buildPlannedQuestions(topic: string, objective: string, intended
     }));
 }
 
-function buildRunIndexMarkdown(run: QARunIndex): string {
-  const topicTitle = normalizeObsidianText(run.topic, run.id);
-  return toFrontmatterMarkdown(
-    {
-      id: run.id,
-      type: "run",
-      title: `${topicTitle} Run`,
-      aliases: makeAliases(run.id),
-      tags: makeTags("sourceloop", "research", "run", run.status, run.executionMode),
-      topic: topicTitle,
-      topic_id: run.topicId,
-      notebook_binding_id: run.notebookBindingId,
-      question_batch_id: run.questionBatchId,
-      status: run.status,
-      execution_mode: run.executionMode,
-      attached_chrome_target_id: run.attachedChromeTargetId,
-      created_at: run.createdAt,
-      updated_at: run.updatedAt,
-      completed_question_ids: run.completedQuestionIds,
-      failure_reason: run.failureReason,
-      output_artifacts: run.outputArtifacts
-    },
-    `# ${topicTitle} Run
-
-## Run Summary
-
-- Topic: ${topicTitle}
-- Topic ID: ${run.topicId ?? "legacy-notebook-first"}
-- Status: ${run.status}
-- Notebook Binding: ${toMarkdownLink(run.notebookBindingId, `../../notebooks/${run.notebookBindingId}.md`)}
-- Attach Target: ${
-        run.attachedChromeTargetId
-          ? toMarkdownLink(run.attachedChromeTargetId, `../../chrome-targets/${run.attachedChromeTargetId}.md`)
-          : "unresolved"
-      }
-- Question Batch: ${toMarkdownLink("questions", "./questions.md")}`
-  );
-}
-
-function buildQuestionsMarkdown(batch: QuestionBatch): string {
-  const sections = batch.questions.flatMap((question) => [
-    `## ${summarizeQuestionTitle(question.prompt, question.id)}`,
-    "",
-    `- Question ID: ${question.id}`,
-    `- Kind: ${question.kind}`,
-    `- Objective: ${question.objective}`,
-    `- Future Exchange: ${toMarkdownLink(summarizeQuestionTitle(question.prompt, question.id), `./exchanges/${question.id}.md`)}`,
-    "",
-    question.prompt,
-    ""
-  ]);
+function buildQuestionsMarkdown(
+  workspace: Awaited<ReturnType<typeof loadWorkspace>>,
+  batch: QuestionBatch,
+  binding: Awaited<ReturnType<typeof loadNotebookBinding>>["binding"]
+): string {
+  const runId = batch.id.replace(/^batch-/, "");
+  const sections = batch.questions.flatMap((question) => {
+    const answerNote = getExchangeNote(workspace, runId, question);
+    return [
+      `## ${summarizeQuestionTitle(question.prompt, question.id)}`,
+      "",
+      `- Kind: ${question.kind}`,
+      `- Objective: ${question.objective}`,
+      `- Answer Note: ${toWikiLink(workspace, answerNote.absolutePath, answerNote.title)}`,
+      "",
+      question.prompt,
+      ""
+    ];
+  });
   const topicTitle = normalizeObsidianText(batch.topic, batch.id);
 
   return toFrontmatterMarkdown(
     {
-      id: batch.id,
       type: "questions",
       title: `${topicTitle} Questions`,
       aliases: makeAliases(batch.id),
       tags: makeTags("sourceloop", "research", "questions", ...batch.questionFamilies),
       topic: topicTitle,
-      topic_id: batch.topicId,
-      notebook_binding_id: batch.notebookBindingId,
       objective: batch.objective,
-      intended_output: batch.intendedOutput,
-      question_families: batch.questionFamilies,
-      created_at: batch.createdAt
+      ...(batch.intendedOutput ? { output: batch.intendedOutput } : {}),
+      families: batch.questionFamilies,
+      created: batch.createdAt,
+      updated: batch.createdAt
     },
     [
       `# ${topicTitle} Questions`,
       "",
       `## Context`,
-      `- Topic: ${topicTitle}`,
-      `- Topic ID: ${batch.topicId ?? "legacy-notebook-first"}`,
-      `- Topic Artifact: ${batch.topicId ? toMarkdownLink(batch.topicId, `../../topics/${batch.topicId}/index.md`) : "none"}`,
-      `- Notebook Binding: ${toMarkdownLink(batch.notebookBindingId, `../../notebooks/${batch.notebookBindingId}.md`)}`,
+      `- Topic: ${
+        batch.topicId
+          ? toWikiLink(
+              workspace,
+              getTopicIndexNote(workspace, {
+                id: batch.topicId,
+                type: "research_topic",
+                name: batch.topic,
+                status: "initialized",
+                createdAt: batch.createdAt,
+                updatedAt: batch.createdAt
+              }).absolutePath,
+              topicTitle
+            )
+          : topicTitle
+      }`,
+      `- Notebook: ${toWikiLink(workspace, getNotebookNote(workspace, binding).absolutePath, getNotebookNote(workspace, binding).title)}`,
       "",
       ...sections
     ].join("\n")
@@ -274,8 +275,4 @@ async function resolveNotebookBindingIdForTopic(rootDir: string, topicId: string
   }
 
   return match.id;
-}
-
-function toMarkdownLink(label: string, targetPath: string): string {
-  return `[${label}](${targetPath})`;
 }

@@ -12,6 +12,7 @@ import { getVaultPaths } from "../vault/paths.js";
 import { writeJsonFile } from "../../lib/write-json.js";
 import { makeAliases, makeTags, normalizeObsidianText } from "../../lib/obsidian.js";
 import { toFrontmatterMarkdown } from "../ingest/frontmatter.js";
+import { getChromeTargetNote } from "../vault/notes.js";
 
 type RegisterChromeProfileTargetInput = {
   name: string;
@@ -112,8 +113,16 @@ export async function removeChromeAttachTarget(input: { targetId: string; cwd?: 
   const workspace = await loadWorkspace(input.cwd);
   const vault = getVaultPaths(workspace);
   const basePath = path.join(vault.chromeTargetsDir, input.targetId);
+  let notePath = `${basePath}.md`;
+  try {
+    const raw = await readFile(`${basePath}.json`, "utf8");
+    const target = chromeAttachTargetSchema.parse(JSON.parse(raw));
+    notePath = getChromeTargetNote(workspace, target).absolutePath;
+  } catch {
+    // fall back to the legacy id-first markdown path
+  }
 
-  await Promise.all([rm(`${basePath}.json`, { force: true }), rm(`${basePath}.md`, { force: true })]);
+  await Promise.all([rm(`${basePath}.json`, { force: true }), rm(notePath, { force: true }), rm(`${basePath}.md`, { force: true })]);
 }
 
 async function persistChromeAttachTarget(
@@ -127,7 +136,7 @@ async function persistChromeAttachTarget(
 
   const basePath = path.join(vault.chromeTargetsDir, target.id);
   const jsonPath = `${basePath}.json`;
-  const markdownPath = `${basePath}.md`;
+  const markdownPath = getChromeTargetNote(workspace, target).absolutePath;
 
   if (!force && (await fileExists(jsonPath))) {
     throw new Error(`Chrome attach target ${target.id} already exists. Re-run with --force to overwrite it.`);
@@ -148,32 +157,24 @@ function buildChromeAttachMarkdown(target: ChromeAttachTarget): string {
     const frontmatter =
       target.targetType === "profile"
       ? {
-          id: target.id,
-          type: "chrome_target",
+          type: "chrome-target",
           title,
           aliases: makeAliases(target.id),
           tags: makeTags("sourceloop", "chrome-target", target.targetType),
-          name: title,
-          target_type: target.targetType,
-          profile_dir_path: target.profileDirPath,
-          chrome_executable_path: target.chromeExecutablePath,
-          remote_debugging_port:
-            target.remoteDebuggingPort !== undefined ? String(target.remoteDebuggingPort) : undefined,
-          launch_args: target.launchArgs,
-          description: target.description,
-          created_at: target.createdAt
+          mode: target.targetType,
+          ...(target.description ? { description: target.description } : {}),
+          created: target.createdAt,
+          updated: target.createdAt
         }
       : {
-          id: target.id,
-          type: "chrome_target",
+          type: "chrome-target",
           title,
           aliases: makeAliases(target.id),
           tags: makeTags("sourceloop", "chrome-target", target.targetType),
-          name: title,
-          target_type: target.targetType,
-          endpoint: target.endpoint,
-          description: target.description,
-          created_at: target.createdAt
+          mode: target.targetType,
+          ...(target.description ? { description: target.description } : {}),
+          created: target.createdAt,
+          updated: target.createdAt
         };
 
   return toFrontmatterMarkdown(frontmatter, buildChromeAttachBody(target));

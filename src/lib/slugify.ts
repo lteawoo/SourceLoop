@@ -1,9 +1,9 @@
 export function slugify(value: string): string {
   return value
+    .normalize("NFKC")
     .toLowerCase()
     .trim()
-    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/[^\p{Letter}\p{Number}]+/gu, "-")
     .replace(/^-+|-+$/g, "")
     .replace(/-{2,}/g, "-");
 }
-

@@ -4,11 +4,14 @@ import { getRunPaths } from "../vault/paths.js";
 import { loadNotebookBinding, loadQuestionBatch, loadRunExchanges } from "./load-artifacts.js";
 import type { NotebookRunnerAdapter } from "../notebooklm/adapter.js";
 import type { NotebookRunnerAnswer } from "../notebooklm/adapter.js";
-import { qaExchangeSchema, runIndexSchema, type QAExchange, type QARunIndex } from "../../schemas/run.js";
+import { qaExchangeSchema, runIndexSchema, type QAExchange, type QARunIndex, type QuestionBatch } from "../../schemas/run.js";
 import { toFrontmatterMarkdown } from "../ingest/frontmatter.js";
 import { writeJsonFile } from "../../lib/write-json.js";
 import { loadTopic, refreshTopicArtifacts } from "../topics/manage-topics.js";
+import { loadChromeAttachTarget } from "../attach/manage-targets.js";
 import { makeAliases, makeTags, normalizeObsidianText, summarizeQuestionTitle } from "../../lib/obsidian.js";
+import { getExchangeNoteFromArtifact, getNotebookNote, getQuestionsNote, getRunIndexNote, getTopicIndexNote, toWikiLink } from "../vault/notes.js";
+import { buildRunIndexMarkdown } from "./render-run-note.js";
 
 export type ExecuteQARunInput = {
   runId: string;
@@ -45,7 +48,7 @@ export async function executeQARun(input: ExecuteQARunInput): Promise<ExecuteQAR
       completedQuestionIds: [...completed.keys()],
       failureReason: error instanceof Error ? error.message : String(error)
     });
-    await persistRunIndex(runPaths.indexJsonPath, runPaths.indexMarkdownPath, currentRun);
+    await persistRunIndex(workspace, runPaths.indexJsonPath, currentRun, batch, binding);
     throw error;
   }
 
@@ -60,7 +63,7 @@ export async function executeQARun(input: ExecuteQARunInput): Promise<ExecuteQAR
       }),
       "running"
     );
-    await persistRunIndex(runPaths.indexJsonPath, runPaths.indexMarkdownPath, currentRun);
+    await persistRunIndex(workspace, runPaths.indexJsonPath, currentRun, batch, binding);
   } catch (error) {
     currentRun = runIndexSchema.parse({
       ...currentRun,
@@ -69,7 +72,7 @@ export async function executeQARun(input: ExecuteQARunInput): Promise<ExecuteQAR
       completedQuestionIds: [...completed.keys()],
       failureReason: error instanceof Error ? error.message : String(error)
     });
-    await persistRunIndex(runPaths.indexJsonPath, runPaths.indexMarkdownPath, currentRun);
+    await persistRunIndex(workspace, runPaths.indexJsonPath, currentRun, batch, binding);
     await input.adapter.dispose?.();
     throw error;
   }
@@ -83,11 +86,15 @@ export async function executeQARun(input: ExecuteQARunInput): Promise<ExecuteQAR
       try {
         const answer = await input.adapter.askQuestion(binding, question);
         const exchange = await writeExchangeArtifact({
+          workspace,
           runId: run.id,
           runPaths,
           notebookBindingId: binding.id,
+          notebookName: binding.name,
           questionId: question.id,
           question: question.prompt,
+          topicName: run.topic,
+          batch,
           answer,
           ...(run.topicId ? { topicId: run.topicId } : {})
         });
@@ -100,7 +107,7 @@ export async function executeQARun(input: ExecuteQARunInput): Promise<ExecuteQAR
           failedQuestionId: undefined,
           failureReason: undefined
         });
-        await persistRunIndex(runPaths.indexJsonPath, runPaths.indexMarkdownPath, currentRun);
+        await persistRunIndex(workspace, runPaths.indexJsonPath, currentRun, batch, binding);
       } catch (error) {
         currentRun = runIndexSchema.parse({
           ...currentRun,
@@ -110,7 +117,7 @@ export async function executeQARun(input: ExecuteQARunInput): Promise<ExecuteQAR
           failedQuestionId: question.id,
           failureReason: error instanceof Error ? error.message : String(error)
         });
-        await persistRunIndex(runPaths.indexJsonPath, runPaths.indexMarkdownPath, currentRun);
+        await persistRunIndex(workspace, runPaths.indexJsonPath, currentRun, batch, binding);
         return {
           run: currentRun,
           completedExchanges: [...completed.values()]
@@ -126,7 +133,7 @@ export async function executeQARun(input: ExecuteQARunInput): Promise<ExecuteQAR
       failedQuestionId: undefined,
       failureReason: undefined
     });
-    await persistRunIndex(runPaths.indexJsonPath, runPaths.indexMarkdownPath, currentRun);
+    await persistRunIndex(workspace, runPaths.indexJsonPath, currentRun, batch, binding);
     if (currentRun.topicId) {
       await refreshTopicArtifacts(currentRun.topicId, input.cwd);
     }
@@ -177,16 +184,41 @@ function updateRunStatus(run: QARunIndex, status: QARunIndex["status"]): QARunIn
   });
 }
 
-async function persistRunIndex(jsonPath: string, markdownPath: string, run: QARunIndex): Promise<void> {
+async function persistRunIndex(
+  workspace: Awaited<ReturnType<typeof loadTopic>>["workspace"],
+  jsonPath: string,
+  run: QARunIndex,
+  batch: QuestionBatch,
+  binding: Awaited<ReturnType<typeof loadNotebookBinding>>["binding"]
+): Promise<void> {
   await writeJsonFile(jsonPath, run);
-  await writeFile(markdownPath, buildRunIndexMarkdown(run), "utf8");
+  const note = getRunIndexNote(workspace, run);
+  const attachTargetId = run.attachedChromeTargetId ?? binding.attachTargetId;
+  const attachTarget = attachTargetId
+    ? (await loadChromeAttachTarget(attachTargetId, workspace.rootDir).catch(() => undefined))?.target
+    : undefined;
+  await writeFile(
+    note.absolutePath,
+    buildRunIndexMarkdown({
+      workspace,
+      run,
+      batch,
+      binding,
+      ...(attachTarget ? { attachTarget } : {})
+    }),
+    "utf8"
+  );
 }
 
 async function writeExchangeArtifact(input: {
+  workspace: Awaited<ReturnType<typeof loadTopic>>["workspace"];
   runId: string;
   topicId?: string;
+  topicName: string;
   runPaths: ReturnType<typeof getRunPaths>;
   notebookBindingId: string;
+  notebookName: string;
+  batch: QuestionBatch;
   questionId: string;
   question: string;
   answer: NotebookRunnerAnswer;
@@ -207,68 +239,24 @@ async function writeExchangeArtifact(input: {
   });
 
   const basePath = path.join(input.runPaths.exchangesDir, exchange.questionId);
+  const note = getExchangeNoteFromArtifact(input.workspace, exchange);
   await writeJsonFile(`${basePath}.json`, exchange);
-  await writeFile(`${basePath}.md`, buildExchangeMarkdown(exchange), "utf8");
+  await writeFile(
+    note.absolutePath,
+    buildExchangeMarkdown(input.workspace, exchange, input.topicName, input.batch, input.notebookName),
+    "utf8"
+  );
 
   return exchange;
 }
 
-function buildRunIndexMarkdown(run: QARunIndex): string {
-  const completedExchangeLines =
-    run.completedQuestionIds.length === 0
-      ? "- none yet"
-      : run.completedQuestionIds.map((questionId) => `- ${toMarkdownLink(questionId, `./exchanges/${questionId}.md`)}`).join("\n");
-  const topicTitle = normalizeObsidianText(run.topic, run.id);
-
-  return toFrontmatterMarkdown(
-    {
-      id: run.id,
-      type: "run",
-      title: `${topicTitle} Run`,
-      aliases: makeAliases(run.id),
-      tags: makeTags("sourceloop", "research", "run", run.status, run.executionMode),
-      topic: topicTitle,
-      topic_id: run.topicId,
-      notebook_binding_id: run.notebookBindingId,
-      question_batch_id: run.questionBatchId,
-      status: run.status,
-      execution_mode: run.executionMode,
-      attached_chrome_target_id: run.attachedChromeTargetId,
-      created_at: run.createdAt,
-      updated_at: run.updatedAt,
-      completed_question_ids: run.completedQuestionIds,
-      failed_question_id: run.failedQuestionId,
-      failure_reason: run.failureReason,
-      output_artifacts: run.outputArtifacts
-    },
-    `# ${topicTitle} Run
-
-## Run Summary
-
-- Topic: ${topicTitle}
-- Topic ID: ${run.topicId ?? "legacy-notebook-first"}
-- Topic Artifact: ${run.topicId ? toMarkdownLink(run.topicId, `../../topics/${run.topicId}/index.md`) : "none"}
-- Status: ${run.status}
-- Notebook Binding: ${toMarkdownLink(run.notebookBindingId, `../../notebooks/${run.notebookBindingId}.md`)}
-- Attach Target: ${
-        run.attachedChromeTargetId
-          ? toMarkdownLink(run.attachedChromeTargetId, `../../chrome-targets/${run.attachedChromeTargetId}.md`)
-          : "none"
-      }
-- Question Batch: ${toMarkdownLink("questions", "./questions.md")}
-
-## Progress
-
-- Completed Questions: ${run.completedQuestionIds.length}
-- Failed Question: ${run.failedQuestionId ?? "none"}
-- Failure Reason: ${run.failureReason ?? "none"}
-
-## Linked Exchanges
-${completedExchangeLines}`
-  );
-}
-
-function buildExchangeMarkdown(exchange: QAExchange): string {
+function buildExchangeMarkdown(
+  workspace: Awaited<ReturnType<typeof loadTopic>>["workspace"],
+  exchange: QAExchange,
+  topicName: string,
+  batch: QuestionBatch,
+  notebookName: string
+): string {
   const citationLines =
     exchange.citations.length === 0
       ? ["- No citations captured"]
@@ -288,17 +276,15 @@ function buildExchangeMarkdown(exchange: QAExchange): string {
   const title = summarizeQuestionTitle(exchange.question, exchange.questionId);
   return toFrontmatterMarkdown(
     {
-      id: exchange.id,
       type: "answer",
       title,
       aliases: makeAliases(exchange.questionId, exchange.id),
       tags: makeTags("sourceloop", "research", "answer", exchange.answerSource),
-      run_id: exchange.runId,
-      topic_id: exchange.topicId,
-      notebook_binding_id: exchange.notebookBindingId,
+      ...(exchange.topicId ? { topic: topicName } : {}),
       question_id: exchange.questionId,
       answer_source: exchange.answerSource,
-      created_at: exchange.createdAt
+      created: exchange.createdAt,
+      updated: exchange.createdAt
     },
     `# ${title}
 
@@ -312,13 +298,67 @@ ${exchange.answer}
 ${citationLines.join("\n")}
 
 ## Links
-- Run: ${toMarkdownLink("Run", "../index.md")}
-- Topic Artifact: ${exchange.topicId ? toMarkdownLink(exchange.topicId, `../../../topics/${exchange.topicId}/index.md`) : "none"}
-- Question Batch: ${toMarkdownLink("questions", "../questions.md")}
-- Notebook Binding: ${toMarkdownLink(exchange.notebookBindingId, `../../../notebooks/${exchange.notebookBindingId}.md`)}`
+- Run: ${toWikiLink(
+      workspace,
+      getRunIndexNote(workspace, {
+        id: exchange.runId,
+        type: "qa_run",
+        topic: topicName,
+        ...(exchange.topicId ? { topicId: exchange.topicId } : {}),
+        notebookBindingId: exchange.notebookBindingId,
+        questionBatchId: `batch-${exchange.runId}`,
+        status: "completed",
+        createdAt: exchange.createdAt,
+        updatedAt: exchange.createdAt,
+        completedQuestionIds: [],
+        outputArtifacts: []
+      }).absolutePath,
+      "Run"
+    )}
+- Topic: ${
+      exchange.topicId
+        ? toWikiLink(
+            workspace,
+            getTopicIndexNote(workspace, {
+              id: exchange.topicId,
+              type: "research_topic",
+              name: topicName,
+              status: "initialized",
+              createdAt: exchange.createdAt,
+              updatedAt: exchange.createdAt
+            }).absolutePath,
+            topicName
+          )
+        : "none"
+    }
+- Questions: ${toWikiLink(
+      workspace,
+      getQuestionsNote(workspace, {
+        id: `batch-${exchange.runId}`,
+        type: "question_batch",
+        topic: topicName,
+        ...(exchange.topicId ? { topicId: exchange.topicId } : {}),
+        notebookBindingId: exchange.notebookBindingId,
+        objective: exchange.question,
+        createdAt: exchange.createdAt,
+        questionFamilies: [],
+        questions: batch.questions
+      }).absolutePath,
+      "Questions"
+    )}
+- Notebook: ${toWikiLink(
+      workspace,
+      getNotebookNote(workspace, {
+        id: exchange.notebookBindingId,
+        type: "notebook_binding",
+        name: notebookName,
+        topic: topicName,
+        notebookUrl: "",
+        accessMode: "owner",
+        topics: [],
+        createdAt: exchange.createdAt
+      }).absolutePath,
+      notebookName
+    )}`
   );
-}
-
-function toMarkdownLink(label: string, targetPath: string): string {
-  return `[${label}](${targetPath})`;
 }

@@ -22,6 +22,8 @@ import { executeQARun } from "../src/core/runs/run-qa.js";
 import { initializeWorkspace } from "../src/core/workspace/init-workspace.js";
 import type { ChromeAttachTarget } from "../src/schemas/attach.js";
 import type { PlannedQuestion } from "../src/schemas/run.js";
+import { getExchangeNote } from "../src/core/vault/notes.js";
+import { loadWorkspace } from "../src/core/workspace/load-workspace.js";
 
 describe("Chrome attach targets", () => {
   it("disconnects user-owned endpoint sessions without killing the browser process", async () => {
@@ -71,7 +73,8 @@ describe("Chrome attach targets", () => {
       expect.arrayContaining([profileTarget.target.id, endpointTarget.target.id])
     );
     expect(loadedProfile.target.targetType).toBe("profile");
-    expect(markdown).toContain("target_type: profile");
+    expect(markdown).toContain("type: chrome-target");
+    expect(markdown).toContain("mode: profile");
     expect(markdown).toContain("Profile Directory:");
   });
 
@@ -150,14 +153,13 @@ describe("Attached NotebookLM runs", () => {
       executionMode?: string;
       attachedChromeTargetId?: string;
     };
-    const runMarkdown = await readFile(path.join(plan.runDir, "index.md"), "utf8");
+    const runMarkdown = await readFile(plan.runMarkdownPath, "utf8");
 
     expect(result.run.status).toBe("completed");
     expect(runIndex.executionMode).toBe("attached_chrome");
     expect(runIndex.attachedChromeTargetId).toBe(attachTarget.target.id);
-    expect(runMarkdown).toContain(
-      `Attach Target: [${attachTarget.target.id}](../../chrome-targets/${attachTarget.target.id}.md)`
-    );
+    expect(runMarkdown).toContain("Attach Target:");
+    expect(runMarkdown).toContain("[[chrome-targets/");
   });
 
   it("fails before execution when attached preflight cannot use NotebookLM", async () => {
@@ -249,8 +251,9 @@ describe("Attached NotebookLM runs", () => {
     expect(result.run.failedQuestionId).toBe(failureQuestionId);
     expect(result.completedExchanges).toHaveLength(1);
 
-    const firstExchangePath = path.join(plan.runDir, "exchanges", `${plan.batch.questions[0]?.id}.md`);
-    const failedExchangePath = path.join(plan.runDir, "exchanges", `${failureQuestionId}.md`);
+    const workspace = await loadWorkspace(workspaceRoot);
+    const firstExchangePath = getExchangeNote(workspace, plan.run.id, plan.batch.questions[0]!).absolutePath;
+    const failedExchangePath = getExchangeNote(workspace, plan.run.id, plan.batch.questions[1]!).absolutePath;
 
     await expect(readFile(firstExchangePath, "utf8")).resolves.toContain("Attached answer for");
     await expect(readFile(failedExchangePath, "utf8")).rejects.toThrow();

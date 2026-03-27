@@ -1,4 +1,5 @@
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -7,10 +8,13 @@ import { composeRun } from "../src/core/outputs/compose-run.js";
 import { FixtureNotebookRunnerAdapter } from "../src/core/notebooklm/fixture-adapter.js";
 import { createQuestionPlan } from "../src/core/runs/question-planner.js";
 import { executeQARun } from "../src/core/runs/run-qa.js";
+import { registerChromeEndpointTarget } from "../src/core/attach/manage-targets.js";
 import { createTopic, loadTopic } from "../src/core/topics/manage-topics.js";
 import { initializeWorkspace } from "../src/core/workspace/init-workspace.js";
 import { ingestSource } from "../src/core/ingest/ingest-source.js";
 import { resolvePlanInput } from "../src/commands/plan.js";
+import { getExchangeNote } from "../src/core/vault/notes.js";
+import { loadWorkspace } from "../src/core/workspace/load-workspace.js";
 
 describe("NotebookLM QA run archive", () => {
   it("creates a notebook-bound planned run and composes traceable outputs", async () => {
@@ -66,23 +70,32 @@ describe("NotebookLM QA run archive", () => {
     });
 
     const notebookMarkdown = await readFile(binding.markdownPath, "utf8");
-    const runIndex = await readFile(path.join(plan.runDir, "index.md"), "utf8");
-    const questionsMarkdown = await readFile(path.join(plan.runDir, "questions.md"), "utf8");
-    const exchangeMarkdown = await readFile(
-      path.join(plan.runDir, "exchanges", `${plan.batch.questions[0]?.id}.md`),
-      "utf8"
-    );
+    const workspace = await loadWorkspace(workspaceRoot);
+    const runIndex = await readFile(plan.runMarkdownPath, "utf8");
+    const questionsMarkdown = await readFile(plan.questionsMarkdownPath, "utf8");
+    const firstExchangeNote = getExchangeNote(workspace, plan.run.id, plan.batch.questions[0]!);
+    const exchangeMarkdown = await readFile(firstExchangeNote.absolutePath, "utf8");
     const outputMarkdown = await readFile(composed.markdownPath, "utf8");
 
     expect(notebookMarkdown).toContain("# AI Agents Notebook");
+    expect(path.basename(binding.markdownPath)).toMatch(/^ai-agents-notebook-/);
+    expect(path.basename(plan.runMarkdownPath)).toBe("ai-agents-market-run.md");
+    expect(path.basename(plan.questionsMarkdownPath)).toBe("ai-agents-market-questions.md");
+    expect(path.basename(firstExchangeNote.absolutePath)).not.toContain(plan.batch.questions[0]?.id ?? "");
     expect(runIndex).toContain(`status: completed`);
-    expect(runIndex).toContain(`question_batch_id: ${plan.batch.id}`);
+    expect(runIndex).toContain("type: run");
+    expect(runIndex).toContain("[[");
+    expect(runIndex).toContain("[[notebooks/");
+    expect(runIndex).toContain("## Linked Exchanges");
+    expect(runIndex).toContain("/outputs/");
     expect(questionsMarkdown).toContain(`type: questions`);
     expect(questionsMarkdown).toContain(`# ai agents market Questions`);
+    expect(questionsMarkdown).toContain("families:");
+    expect(questionsMarkdown).toContain("[[runs/");
     expect(exchangeMarkdown).toContain("## NotebookLM Answer");
     expect(exchangeMarkdown).toContain("answer_source: notebooklm");
     expect(outputMarkdown).toContain("## Traceability");
-    expect(outputMarkdown).toContain("../exchanges/");
+    expect(outputMarkdown).toContain("[[");
     expect(outputMarkdown).toContain("type: output");
   });
 
@@ -152,18 +165,21 @@ describe("NotebookLM QA run archive", () => {
       format: "outline"
     });
 
-    const runIndex = await readFile(path.join(plan.runDir, "index.md"), "utf8");
-    const questionsMarkdown = await readFile(path.join(plan.runDir, "questions.md"), "utf8");
-    const exchangeMarkdown = await readFile(path.join(plan.runDir, "exchanges", `${plan.batch.questions[0]?.id}.md`), "utf8");
+    const workspace = await loadWorkspace(workspaceRoot);
+    const runIndex = await readFile(plan.runMarkdownPath, "utf8");
+    const questionsMarkdown = await readFile(plan.questionsMarkdownPath, "utf8");
+    const exchangeMarkdown = await readFile(getExchangeNote(workspace, plan.run.id, plan.batch.questions[0]!).absolutePath, "utf8");
     const outputMarkdown = await readFile(composed.markdownPath, "utf8");
     const refreshed = await loadTopic(topic.topic.id, workspaceRoot);
 
     expect(runResult.run.status).toBe("completed");
-    expect(runIndex).toContain(`topic_id: ${topic.topic.id}`);
-    expect(questionsMarkdown).toContain(`topic_id: ${topic.topic.id}`);
-    expect(questionsMarkdown).toContain("question_families:");
-    expect(exchangeMarkdown).toContain(`topic_id: ${topic.topic.id}`);
-    expect(outputMarkdown).toContain(`topic_id: ${topic.topic.id}`);
+    expect(runIndex).toContain(`topic: "AI agents market"`);
+    expect(runIndex).toContain("[[topics/");
+    expect(runIndex).toContain("[[notebooks/");
+    expect(questionsMarkdown).toContain("families:");
+    expect(questionsMarkdown).toContain('output: "lecture outline"');
+    expect(exchangeMarkdown).toContain(`topic: "AI agents market"`);
+    expect(outputMarkdown).toContain(`format: outline`);
     expect(refreshed.topic.status).toBe("researched");
     expect(refreshed.corpus.notebookBindingIds).toContain(binding.binding.id);
     expect(refreshed.corpus.runIds).toContain(plan.run.id);
@@ -240,6 +256,39 @@ describe("NotebookLM QA run archive", () => {
     });
   });
 
+  it("still creates a plan when the bound attach target artifact is missing", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
+    await initializeWorkspace({ directory: workspaceRoot, force: false });
+    const attachTarget = await registerChromeEndpointTarget({
+      cwd: workspaceRoot,
+      name: "Missing Target",
+      endpoint: "http://127.0.0.1:9222"
+    });
+
+    const binding = await bindNotebook({
+      cwd: workspaceRoot,
+      name: "Notebook With Missing Attach Target",
+      topic: "missing-attach",
+      notebookUrl: "https://notebooklm.google.com/notebook/example",
+      accessMode: "owner",
+      attachTargetId: attachTarget.target.id
+    });
+
+    await rm(path.join(workspaceRoot, "vault", "chrome-targets", `${attachTarget.target.id}.json`), { force: true });
+    await rm(attachTarget.markdownPath, { force: true });
+
+    const plan = await createQuestionPlan({
+      cwd: workspaceRoot,
+      topic: "missing attach planning",
+      notebookBindingId: binding.binding.id
+    });
+
+    const runMarkdown = await readFile(plan.runMarkdownPath, "utf8");
+
+    expect(plan.run.status).toBe("planned");
+    expect(runMarkdown).toContain(`Attach Target: ${attachTarget.target.id}`);
+  });
+
   it("does not silently overwrite an existing notebook binding without --force", async () => {
     const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
     await initializeWorkspace({ directory: workspaceRoot, force: false });
@@ -304,8 +353,9 @@ describe("NotebookLM QA run archive", () => {
     expect(runResult.run.failedQuestionId).toBe(failingQuestion?.id);
     expect(runResult.completedExchanges).toHaveLength(1);
 
-    const firstExchangePath = path.join(plan.runDir, "exchanges", `${plan.batch.questions[0]?.id}.md`);
-    const secondExchangePath = path.join(plan.runDir, "exchanges", `${failingQuestion?.id}.md`);
+    const workspace = await loadWorkspace(workspaceRoot);
+    const firstExchangePath = getExchangeNote(workspace, plan.run.id, plan.batch.questions[0]!).absolutePath;
+    const secondExchangePath = getExchangeNote(workspace, plan.run.id, failingQuestion!).absolutePath;
     const firstExchange = await readFile(firstExchangePath, "utf8");
 
     expect(firstExchange).toContain("Partial answer 1");
@@ -355,10 +405,10 @@ describe("NotebookLM QA run archive", () => {
     });
 
     const outputMarkdown = await readFile(composed.markdownPath, "utf8");
-    const firstQuestionId = plan.batch.questions[0]?.id;
-    const secondQuestionId = plan.batch.questions[1]?.id;
+    const firstQuestionTitle = plan.batch.questions[0]?.prompt ?? "";
+    const secondQuestionTitle = plan.batch.questions[1]?.prompt ?? "";
 
-    expect(outputMarkdown.indexOf(firstQuestionId ?? "")).toBeLessThan(outputMarkdown.indexOf(secondQuestionId ?? ""));
+    expect(outputMarkdown.indexOf(firstQuestionTitle)).toBeLessThan(outputMarkdown.indexOf(secondQuestionTitle));
   });
 
   it("falls back to generic deep questions when a topic has no goal or output hints", async () => {
@@ -394,5 +444,40 @@ describe("NotebookLM QA run archive", () => {
     expect(plan.batch.objective).toContain("Research Professional Web Design with Claude Code");
     expect(plan.batch.intendedOutput).toBeUndefined();
     expect(plan.batch.questions).toHaveLength(10);
+  });
+
+  it("keeps non-ASCII titles in human-readable note filenames", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
+    await initializeWorkspace({ directory: workspaceRoot, force: false });
+
+    const topic = await createTopic({
+      cwd: workspaceRoot,
+      name: "클로드 코드 웹디자인"
+    });
+    const sourcePath = path.join(workspaceRoot, "korean-source.md");
+    await writeFile(sourcePath, "한글 소스입니다.", "utf8");
+    await ingestSource({
+      cwd: workspaceRoot,
+      input: sourcePath,
+      topicId: topic.topic.id
+    });
+
+    const binding = await bindNotebook({
+      cwd: workspaceRoot,
+      name: "웹디자인 노트북",
+      topic: topic.topic.name,
+      topicId: topic.topic.id,
+      notebookUrl: "https://notebooklm.google.com/notebook/example",
+      accessMode: "owner"
+    });
+
+    const plan = await createQuestionPlan({
+      cwd: workspaceRoot,
+      topicId: topic.topic.id
+    });
+
+    expect(path.basename(binding.markdownPath)).toContain("웹디자인-노트북");
+    expect(path.basename(plan.runMarkdownPath)).toContain("클로드-코드-웹디자인-run");
+    expect(path.basename(plan.questionsMarkdownPath)).toContain("클로드-코드-웹디자인-questions");
   });
 });
