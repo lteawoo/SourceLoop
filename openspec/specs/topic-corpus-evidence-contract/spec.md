@@ -4,14 +4,19 @@
 TBD - created by archiving change topic-source-notebook-contract. Update Purpose after archive.
 ## Requirements
 ### Requirement: Topic corpus readiness SHALL accept notebook-backed evidence
-The system SHALL treat notebook-source manifests as valid topic evidence alongside local source notes.
+The system SHALL treat local source notes, notebook-source manifests, and successfully imported managed notebook sources as valid topic evidence.
 
-#### Scenario: Topic has notebook-backed evidence but no local source note
-- **WHEN** a topic has at least one notebook binding and at least one notebook-source manifest
+#### Scenario: Topic has imported managed notebook evidence but no local source note
+- **WHEN** a topic has at least one notebook binding and at least one managed import in the `imported` state aligned to that notebook
 - **THEN** the topic SHALL be considered ready for planning even if no local source document exists
 
+#### Scenario: Topic has notebook-backed evidence but only queued managed imports
+- **WHEN** a topic has a managed notebook and managed imports that are still `queued` or `failed`
+- **THEN** those imports SHALL NOT satisfy corpus readiness
+- **AND** planning or execution preflight SHALL explain that usable notebook evidence is still missing
+
 #### Scenario: Topic has no evidence artifacts
-- **WHEN** a topic has notebook bindings but neither local sources nor notebook-source manifests
+- **WHEN** a topic has notebook bindings but neither local sources, notebook-source manifests, nor imported managed notebook sources
 - **THEN** the topic SHALL remain in a source-collection state
 - **AND** planning or execution preflight SHALL explain that the topic still lacks declared evidence
 
