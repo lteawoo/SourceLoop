@@ -75,6 +75,7 @@ Use this skill when the current project is a SourceLoop workspace.
 3. Fix blocking prerequisites before planning or running
 4. Prepare the managed browser before notebook creation or execution
 5. Choose the kickoff path:
+   - no topic provided
    - topic only
    - topic plus sources
    - existing NotebookLM URL
@@ -93,6 +94,8 @@ Use this skill when the current project is a SourceLoop workspace.
   - create/bind flow is reachable
 - If these checks fail, do not wander through the UI.
 - Stop and ask the user to fix login, permissions, or landing-page state.
+- If only another Chrome is available, do not silently continue on that path.
+- Ask the user whether to keep going with that Chrome or switch back to the SourceLoop browser first.
 
 ## Kickoff paths
 
@@ -101,6 +104,9 @@ Use this skill when the current project is a SourceLoop workspace.
   - prepare attached Chrome
   - create a managed notebook
   - ask the user which sources to import before planning
+- No topic provided:
+  - ask the user which topic to research
+  - do not create notebooks, import sources, or plan questions yet
 - Topic plus sources:
   - create the topic if needed
   - prepare attached Chrome
@@ -111,11 +117,15 @@ Use this skill when the current project is a SourceLoop workspace.
   - bind the existing notebook
   - declare notebook-backed evidence if the sources already exist there
   - otherwise ask which sources still need to be added
+  - do not search for replacement source materials unless the user explicitly asks you to find them
+  - if only another Chrome is available, ask the user before continuing
 
 ## Command selection
 
 - No topic: \`sourceloop topic create ...\`
+- User asked to start research without a topic: ask which topic to research before doing anything else
 - No trusted isolated Chrome target: \`sourceloop chrome launch\`
+- Treat \`sourceloop chrome launch\` as the visible setup step for login and first NotebookLM checks
 - Managed isolated Chrome target exists but is not validated yet: \`sourceloop attach validate <target>\`
 - Topic only and no notebook yet: \`sourceloop notebook-create ...\` then ask for source inputs
 - Topic plus sources and no notebook yet: \`sourceloop notebook-create ...\`
@@ -132,6 +142,9 @@ Use this skill when the current project is a SourceLoop workspace.
 - Do not skip \`status --json\` and \`doctor --json\`
 - Do not freestyle inside NotebookLM when the first entry checks fail
 - Treat shared or unknown Chrome profile isolation as a warning that should be surfaced before more NotebookLM work
+- Do not silently fall back to another Chrome session
+- Ask the user before continuing with a non-SourceLoop browser
+- Do not autonomously search the web or choose source materials unless the user explicitly asked you to find sources
 - Do not run \`plan\` without usable evidence
 - Do not run \`run\` without a notebook binding and planned run
 - Do not use \`--question-id\` and \`--from-question\` together
@@ -162,9 +175,10 @@ function buildCodexPlaybookReference(): string {
 
 The operator should classify the user's first request into one of these:
 
-1. topic only
-2. topic plus sources
-3. existing NotebookLM URL
+1. no topic provided
+2. topic only
+3. topic plus sources
+4. existing NotebookLM URL
 
 ## First-entry rules for NotebookLM
 
@@ -174,14 +188,20 @@ The operator should classify the user's first request into one of these:
   - create or bind flow is reachable
 - If any of these checks fail, do not explore the UI further.
 - Stop and ask the user to fix login, permissions, or landing-page state.
+- If only another Chrome is available, do not silently continue on that path.
+- Ask the user whether to keep going with that Chrome or switch back to the SourceLoop browser first.
 
 ## Decision rules
 
 - If doctor has errors, resolve them first.
 - Prefer \`sourceloop chrome launch\` so NotebookLM research uses a SourceLoop-managed isolated profile instead of a shared default browser profile.
+- Use \`chrome launch\` as the visible setup step, then keep later notebook actions hidden unless you need \`--show-browser\` for debugging.
 - Prefer URL-less \`sourceloop attach validate <target>\` before notebook creation when only NotebookLM home readiness is needed.
+- If the user did not provide a topic, ask for the topic first and stop there.
 - If no trusted isolated Chrome target exists, launch browser state before notebook actions.
+- If only another Chrome is available, ask the user whether to keep going with that Chrome before using it.
 - If the user provided only a topic, create a managed notebook and ask which sources to import.
+- If the user did not provide sources, do not search for or choose source materials unless the user explicitly asked you to find sources.
 - If the user provided topic plus sources, create a managed notebook and import those sources.
 - If the user provided a NotebookLM URL, bind the existing notebook and continue from its source state.
 - If a run already exists, resume with bounded execution instead of creating large new passes.

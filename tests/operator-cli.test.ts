@@ -202,6 +202,55 @@ describe("operator CLI workflow", () => {
     );
   });
 
+  it("treats shared attach targets as fallback paths that require user confirmation", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
+    await initializeWorkspace({ directory: workspaceRoot, force: false });
+
+    const topic = await createTopic({
+      cwd: workspaceRoot,
+      name: "Shared browser fallback"
+    });
+
+    const attachTarget = await registerChromeEndpointTarget({
+      cwd: workspaceRoot,
+      name: "shared-browser",
+      endpoint: "http://127.0.0.1:9222",
+      profileIsolation: "shared"
+    });
+
+    await bindNotebook({
+      cwd: workspaceRoot,
+      name: "Shared Notebook",
+      topic: topic.topic.name,
+      topicId: topic.topic.id,
+      notebookUrl: "https://notebooklm.google.com/notebook/shared",
+      accessMode: "owner",
+      attachTargetId: attachTarget.target.id
+    });
+
+    const statusReport = await buildWorkspaceStatusReport(workspaceRoot);
+    const doctorReport = await buildDoctorReport(workspaceRoot);
+
+    expect(statusReport.nextActions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "launch_isolated_browser",
+          message: expect.stringContaining("Ask whether to keep going with the current Chrome"),
+          command: expect.stringContaining("keep going with the current Chrome")
+        })
+      ])
+    );
+    expect(doctorReport.findings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          category: "attach",
+          severity: "warning",
+          message: expect.stringContaining("Ask whether to keep going with that Chrome")
+        })
+      ])
+    );
+  });
+
   it("diagnoses missing bindings, missing evidence, and incomplete runs", async () => {
     const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
     await initializeWorkspace({ directory: workspaceRoot, force: false });
