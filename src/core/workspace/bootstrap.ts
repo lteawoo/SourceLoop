@@ -85,6 +85,8 @@ Use this skill when the current project is a SourceLoop workspace.
    - \`plan --max-questions 3\` or \`5\`
    - \`run --limit 1\` or \`2\`
 9. Re-check \`status --json\` after each meaningful step
+10. If a NotebookLM step may take a while, say so briefly before waiting
+11. If a run command already has a chosen \`--limit\`, let that command finish its full requested scope before asking what to do next
 
 ## NotebookLM entry rules
 
@@ -136,6 +138,7 @@ Use this skill when the current project is a SourceLoop workspace.
 - Ready topic with no run: \`sourceloop plan ... --max-questions 3 --families core,execution --json\`
 - Planned or incomplete run: \`sourceloop run ... --limit 1 --json\`
 - Existing latest answer only: \`sourceloop import-latest ...\`
+- Treat \`--limit\` as the execution scope for one run command. Do not stop halfway through that requested limit just to ask again.
 
 ## Safety
 
@@ -149,6 +152,7 @@ Use this skill when the current project is a SourceLoop workspace.
 - Do not run \`run\` without a notebook binding and planned run
 - Do not use \`--question-id\` and \`--from-question\` together
 - Do not default to large run batches
+- Do not turn bounded execution into per-question interruptions unless the user explicitly asked for checkpoint-style approval
 
 For the full operator flow, read [references/playbook.md](references/playbook.md).
 `;
@@ -205,6 +209,8 @@ The operator should classify the user's first request into one of these:
 - If the user provided topic plus sources, create a managed notebook and import those sources.
 - If the user provided a NotebookLM URL, bind the existing notebook and continue from its source state.
 - If a run already exists, resume with bounded execution instead of creating large new passes.
+- If you already chose a bounded run command such as \`run --limit 1\`, let that command complete before asking whether to continue with another run.
+- Tell the user that NotebookLM actions can take a bit before you wait on them, and if the wait becomes long, ask whether to keep waiting or just report the current state.
 `;
 }
 

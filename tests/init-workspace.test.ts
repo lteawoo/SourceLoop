@@ -71,12 +71,14 @@ describe("initializeWorkspace", () => {
     expect(skillMarkdown).toContain("Do not silently fall back to another Chrome session");
     expect(skillMarkdown).toContain("Ask the user before continuing with a non-SourceLoop browser");
     expect(skillMarkdown).toContain("trusted isolated Chrome target");
+    expect(skillMarkdown).toContain("Do not stop halfway through that requested limit just to ask again");
     expect(playbookReference).toContain("chrome launch");
     expect(playbookReference).toContain("existing NotebookLM URL");
     expect(playbookReference).toContain("SourceLoop-managed isolated profile");
     expect(playbookReference).toContain("If the user did not provide a topic, ask for the topic first");
     expect(playbookReference).toContain("do not silently continue on that path");
     expect(playbookReference).toContain("visible setup step");
+    expect(playbookReference).toContain("let that command complete before asking whether to continue");
   });
 
   it("adds Codex bootstrap to an existing workspace without rewriting config", async () => {

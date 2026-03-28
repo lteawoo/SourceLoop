@@ -52,6 +52,10 @@ The agent should avoid guessing hidden state when the CLI can report it directly
 - Prefer small batches first:
   - `plan --max-questions 3` or `5`
   - `run --limit 1` or `2`
+- Treat the chosen `--limit` as the full scope of that one run command
+- Do not interrupt a running `run --limit N` halfway through just to ask again unless the user explicitly asked for checkpoint-style approval
+- Before waiting on NotebookLM, briefly tell the user that the action can take a bit
+- If the wait becomes long, ask whether to keep waiting or just report the current state instead of silently probing deeper
 - Re-check state after each meaningful step
 
 ## NotebookLM First-Entry Rule
@@ -138,7 +142,7 @@ sourceloop notebook-source declare \
   --json
 
 sourceloop plan topic-ai-agents-market --max-questions 5 --families core,execution --json
-sourceloop run <run-id> --limit 2 --show-browser --json
+sourceloop run <run-id> --limit 2 --json
 ```
 
 ### When to use
@@ -185,7 +189,7 @@ sourceloop notebook-import \
 
 sourceloop doctor --json
 sourceloop plan topic-ai-agents-market --max-questions 5 --families core,execution --json
-sourceloop run <run-id> --limit 2 --show-browser --json
+sourceloop run <run-id> --limit 2 --json
 ```
 
 ### When to use
@@ -205,6 +209,9 @@ Use bounded planning and execution by default.
   - `--families core,execution`
 - first run:
   - `--limit 1` or `2`
+
+This is a default for the first pass, not a rule to stop after every single answer.
+If the agent already chose `run --limit 1`, it should let that one-question run finish and then report the result.
 
 ### Useful commands
 
@@ -262,6 +269,8 @@ The agent should keep updates short and operational:
 - "The notebook is bound, but there is still no usable evidence. I will import the provided sources first."
 - "The topic is ready for planning. I will generate a 5-question core and execution batch."
 - "I will run only 2 questions first so we can check answer quality before expanding."
+- "NotebookLM can take a little while here. I will wait briefly for the result."
+- "This run is still in progress. Do you want me to keep waiting, or should I report the current state first?"
 
 ## Integration Model
 
