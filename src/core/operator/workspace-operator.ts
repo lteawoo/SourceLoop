@@ -204,7 +204,7 @@ export async function buildDoctorReport(cwd?: string): Promise<DoctorReport> {
       severity: "warning",
       category: "attach",
       message: `Managed isolated Chrome target ${target.id} has not been validated against NotebookLM yet.`,
-      suggestedCommand: `sourceloop attach validate ${target.id} --notebook-url "https://notebooklm.google.com/notebook/..."`
+      suggestedCommand: `sourceloop attach validate ${target.id}`
     });
   }
 
@@ -644,7 +644,7 @@ function recommendNextActions(
     actions.push({
       kind: "validate_attach",
       message: `Validate managed Chrome target ${managedUnvalidatedTarget.id} against NotebookLM before more work.`,
-      command: `sourceloop attach validate ${managedUnvalidatedTarget.id} --notebook-url "https://notebooklm.google.com/notebook/..."`
+      command: `sourceloop attach validate ${managedUnvalidatedTarget.id}`
     });
   }
 
@@ -824,7 +824,7 @@ function hasUsableAttachTarget(
 
 function buildAttachSafetyCommand(target: ChromeAttachTarget): string {
   if (isManagedIsolatedAttachTarget(target) && target.notebooklmReadiness !== "validated") {
-    return `sourceloop attach validate ${target.id} --notebook-url "https://notebooklm.google.com/notebook/..."`;
+    return `sourceloop attach validate ${target.id}`;
   }
   return `sourceloop chrome launch --name "${target.name}" --force`;
 }

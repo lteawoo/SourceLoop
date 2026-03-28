@@ -1,19 +1,41 @@
 import { describe, expect, it } from "vitest";
 import {
   canonicalizeNotebookUrl,
+  countRichNotebookLMCitations,
   didImportIncreaseVisibleSourceCount,
   ensureNotebookTargetMatch,
   didImportProduceNewMatchingCandidate,
   getManagedImportSuccessNeedles,
+  hasNotebookLMCitationSnippet,
+  isLikelyNotebookLMCitationMarker,
   isNotebookPageMatch,
   isLikelyCitationOverflowControl,
   parseNotebookSourceCount,
+  shouldRetryNotebookLMCitationCapture,
+  shouldTreatCitationMetadataAsSettled,
   shouldExpandCitationOverflowControl,
   type ManagedNotebookBrowserImportInput,
   type NotebookLMCitationOverflowCandidate
 } from "../src/core/notebooklm/browser-agent.js";
 
 describe("NotebookLM browser agent overflow controls", () => {
+  it("keeps only real numeric citation markers and ignores overflow buttons", () => {
+    expect(
+      isLikelyNotebookLMCitationMarker({
+        text: "2",
+        dialogLabel: "인용 세부정보",
+        triggerDescription: "클릭하여 인용 세부정보 열기"
+      })
+    ).toBe(true);
+
+    expect(
+      isLikelyNotebookLMCitationMarker({
+        text: "more_horiz",
+        ariaLabel: "추가 인용 표시하기"
+      })
+    ).toBe(false);
+  });
+
   it("canonicalizes transient managed notebook URLs", () => {
     expect(canonicalizeNotebookUrl("https://notebooklm.google.com/notebook/abc?addSource=true")).toBe(
       "https://notebooklm.google.com/notebook/abc"
@@ -137,5 +159,73 @@ describe("NotebookLM browser agent overflow controls", () => {
     expect(didImportIncreaseVisibleSourceCount(1, 1)).toBe(false);
     expect(didImportIncreaseVisibleSourceCount(undefined, 2)).toBe(false);
     expect(didImportIncreaseVisibleSourceCount(1, undefined)).toBe(false);
+  });
+
+  it("distinguishes title-only citations from citations with real snippets", () => {
+    expect(hasNotebookLMCitationSnippet("Attention in transformers, step-by-step | Deep Learning Chapter 6")).toBe(false);
+    expect(
+      hasNotebookLMCitationSnippet(
+        "Attention in transformers, step-by-step | Deep Learning Chapter 6 | 지난 장에서 우리는 방향이 성별에 어떻게 대응할 수 있는지 예를 보았다"
+      )
+    ).toBe(true);
+
+    expect(
+      countRichNotebookLMCitations([
+        { label: "1", note: "Attention in transformers, step-by-step | Deep Learning Chapter 6" },
+        {
+          label: "2",
+          note: "Attention in transformers, step-by-step | Deep Learning Chapter 6 | 실제 인용 스니펫이 여기에 붙는다"
+        }
+      ])
+    ).toBe(1);
+  });
+
+  it("retries sparse citation captures when only title-only notes were extracted", () => {
+    expect(
+      shouldRetryNotebookLMCitationCapture([
+        { label: "1", note: "Attention in transformers, step-by-step | Deep Learning Chapter 6" },
+        { label: "2", note: "Attention in transformers, step-by-step | Deep Learning Chapter 6" },
+        { label: "3", note: "Attention in transformers, step-by-step | Deep Learning Chapter 6" }
+      ])
+    ).toBe(true);
+
+    expect(
+      shouldRetryNotebookLMCitationCapture([
+        {
+          label: "1",
+          note: "Attention in transformers, step-by-step | Deep Learning Chapter 6 | 실제 인용 스니펫이 여기에 붙는다"
+        },
+        {
+          label: "2",
+          note: "Attention in transformers, step-by-step | Deep Learning Chapter 6 | 또 다른 인용 스니펫"
+        },
+        {
+          label: "3",
+          note: "Attention in transformers, step-by-step | Deep Learning Chapter 6 | 세 번째 인용 스니펫"
+        }
+      ])
+    ).toBe(false);
+  });
+
+  it("settles citation metadata quickly when no citation markers appear", () => {
+    let state = shouldTreatCitationMetadataAsSettled({
+      signature: "",
+      latestSignature: "",
+      stableCount: 0,
+      emptyStableCount: 0
+    });
+    expect(state.settled).toBe(false);
+
+    for (let index = 0; index < 5; index += 1) {
+      state = shouldTreatCitationMetadataAsSettled({
+        signature: "",
+        latestSignature: "",
+        stableCount: state.stableCount,
+        emptyStableCount: state.emptyStableCount
+      });
+    }
+
+    expect(state.settled).toBe(true);
+    expect(state.stableCount).toBe(0);
   });
 });

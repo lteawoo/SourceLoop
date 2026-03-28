@@ -50,11 +50,9 @@ sourceloop doctor
 
 sourceloop topic create --name "AI agents market"
 
-# launch a dedicated Chrome research profile, sign in to NotebookLM yourself, then attach it
+# launch a dedicated Chrome research profile, sign in to NotebookLM yourself, then validate NotebookLM home access
 sourceloop chrome launch --name work-chrome
-sourceloop attach validate \
-  attach-work-chrome \
-  --notebook-url "https://notebooklm.google.com/notebook/<real-notebook-id>"
+sourceloop attach validate attach-work-chrome
 
 sourceloop notebook-create \
   --name "AI Agents" \
@@ -110,6 +108,7 @@ sourceloop status --json
 sourceloop doctor --json
 sourceloop topic create --name "AI agents market" --json
 sourceloop chrome launch --name work-chrome
+sourceloop attach validate attach-work-chrome
 sourceloop notebook-create --name "AI Agents" --topic-id topic-ai-agents-market --attach-target attach-work-chrome --json
 # works for the first source on an empty managed notebook and for later add-source imports
 sourceloop notebook-import --notebook <managed-notebook-binding-id> --url "https://youtube.com/watch?v=..." --json
@@ -118,6 +117,7 @@ sourceloop run <run-id> --limit 1 --json
 ```
 
 SourceLoop recommends `sourceloop chrome launch` as the preferred NotebookLM browser setup. Shared or unknown browser profiles still work in this phase, but `doctor` and `status` will warn so operators do not treat them as the preferred setup.
+Use `sourceloop attach validate <target>` to validate NotebookLM home readiness. Only add `--notebook-url ...` when you specifically need to confirm that an existing notebook detail view opens.
 For SourceLoop-managed notebooks, NotebookLM titles are treated as best-effort labels. The durable local binding id comes from the remote NotebookLM notebook id, so operators should use the returned JSON or `status --json` output rather than guessing a slug from the requested title.
 
 ## Vault Structure

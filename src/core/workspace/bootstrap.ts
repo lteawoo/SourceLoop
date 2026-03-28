@@ -73,7 +73,7 @@ Use this skill when the current project is a SourceLoop workspace.
 1. Run \`sourceloop status --json\`
 2. Run \`sourceloop doctor --json\`
 3. Fix blocking prerequisites before planning or running
-4. Prepare attached Chrome before notebook creation or execution
+4. Prepare the managed browser before notebook creation or execution
 5. Choose the kickoff path:
    - topic only
    - topic plus sources
@@ -116,6 +116,7 @@ Use this skill when the current project is a SourceLoop workspace.
 
 - No topic: \`sourceloop topic create ...\`
 - No trusted isolated Chrome target: \`sourceloop chrome launch\`
+- Managed isolated Chrome target exists but is not validated yet: \`sourceloop attach validate <target>\`
 - Topic only and no notebook yet: \`sourceloop notebook-create ...\` then ask for source inputs
 - Topic plus sources and no notebook yet: \`sourceloop notebook-create ...\`
 - Existing NotebookLM URL: \`sourceloop notebook-bind ...\` then \`sourceloop notebook-source declare ...\`
@@ -150,7 +151,7 @@ function buildCodexPlaybookReference(): string {
 3. topic preparation
 4. managed isolated Chrome / NotebookLM session preparation
 5. \`chrome launch\`
-6. optional \`attach validate\`
+6. \`attach validate\`
 7. \`notebook-create\` or \`notebook-bind\`
 8. \`ingest\`, \`notebook-import\`, or \`notebook-source declare\`
 9. \`status --json\` and \`doctor --json\` again
@@ -178,6 +179,7 @@ The operator should classify the user's first request into one of these:
 
 - If doctor has errors, resolve them first.
 - Prefer \`sourceloop chrome launch\` so NotebookLM research uses a SourceLoop-managed isolated profile instead of a shared default browser profile.
+- Prefer URL-less \`sourceloop attach validate <target>\` before notebook creation when only NotebookLM home readiness is needed.
 - If no trusted isolated Chrome target exists, launch browser state before notebook actions.
 - If the user provided only a topic, create a managed notebook and ask which sources to import.
 - If the user provided topic plus sources, create a managed notebook and import those sources.

@@ -192,6 +192,50 @@ describe("Chrome attach targets", () => {
       message: "NotebookLM redirected to sign in"
     });
   });
+
+  it("treats URL-less attach validation as NotebookLM home validation", async () => {
+    const target = {
+      id: "attach-home-validation",
+      type: "chrome_attach_target",
+      name: "Home Validation",
+      profileIsolation: "isolated",
+      ownership: "sourceloop_managed",
+      targetType: "profile",
+      profileDirPath: "/tmp/sourceloop-profile",
+      launchArgs: [],
+      createdAt: new Date().toISOString()
+    } satisfies ChromeAttachTarget;
+
+    let observedPreflightArg: string | undefined;
+    const result = await validateChromeAttachTarget({
+      target,
+      sessionFactory: {
+        async createSession() {
+          return {
+            async preflight(notebookUrl?: string) {
+              observedPreflightArg = notebookUrl;
+            },
+            async askQuestion() {
+              throw new Error("not used");
+            },
+            async captureLatestAnswer() {
+              throw new Error("not used");
+            },
+            async createNotebook() {
+              throw new Error("not used");
+            },
+            async importSource() {
+              throw new Error("not used");
+            },
+            async close() {}
+          };
+        }
+      }
+    });
+
+    expect(result).toEqual({ ok: true });
+    expect(observedPreflightArg).toBeUndefined();
+  });
 });
 
 describe("Attached NotebookLM runs", () => {

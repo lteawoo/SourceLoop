@@ -102,6 +102,42 @@ export function shouldExpandCitationOverflowControl(candidate: NotebookLMCitatio
   return Boolean(candidate.citationAdjacent) && isLikelyCitationOverflowControl(candidate);
 }
 
+export function isLikelyNotebookLMCitationMarker(candidate: {
+  text?: string | null;
+  ariaLabel?: string | null;
+  dialogLabel?: string | null;
+  triggerDescription?: string | null;
+}): boolean {
+  const text = normalizeControlText(candidate.text);
+  const ariaLabel = normalizeControlText(candidate.ariaLabel);
+  const dialogLabel = normalizeControlText(candidate.dialogLabel);
+  const triggerDescription = normalizeControlText(candidate.triggerDescription);
+
+  if (/^\d+$/.test(text)) {
+    return true;
+  }
+
+  if (/^\d+\s*:/.test(ariaLabel)) {
+    return true;
+  }
+
+  const combined = `${dialogLabel} ${triggerDescription}`.trim();
+  if (/citation|인용/i.test(combined)) {
+    return true;
+  }
+
+  return false;
+}
+
+export function hasNotebookLMCitationSnippet(note?: string | null): boolean {
+  const normalized = normalizeControlText(note);
+  if (!normalized) {
+    return false;
+  }
+
+  return normalized.split(" | ").length >= 3;
+}
+
 export type ChromeAttachValidationCode =
   | "chrome_unreachable"
   | "notebooklm_sign_in_required"
@@ -147,7 +183,7 @@ export type NotebookLMImportSuccessCandidate = {
 };
 
 export interface NotebookBrowserSession {
-  preflight(notebookUrl: string): Promise<void>;
+  preflight(notebookUrl?: string): Promise<void>;
   askQuestion(question: PlannedQuestion): Promise<{ answer: string; citations: CitationReference[] }>;
   captureLatestAnswer(): Promise<{ answer: string; citations: CitationReference[] }>;
   createNotebook(title: string): Promise<ManagedNotebookBrowserCreateResult>;
@@ -190,7 +226,7 @@ export async function validateChromeAttachTarget(input: {
   });
 
   try {
-    await session.preflight(input.notebookUrl ?? NOTEBOOKLM_DEFAULT_URL);
+    await session.preflight(input.notebookUrl);
     return { ok: true };
   } catch (error) {
     if (error instanceof ChromeAttachValidationError) {
@@ -243,15 +279,22 @@ async function createPlaywrightNotebookBrowserSession(input: {
   };
 
   return {
-    async preflight(notebookUrl: string): Promise<void> {
-      const activePage = await ensurePage(notebookUrl);
-      if (input.reuseExistingNotebookPage && isNotebookPageMatch(activePage.url(), notebookUrl)) {
+    async preflight(notebookUrl?: string): Promise<void> {
+      const targetUrl = notebookUrl ?? NOTEBOOKLM_DEFAULT_URL;
+      const activePage = await ensurePage(targetUrl);
+      if (notebookUrl && input.reuseExistingNotebookPage && isNotebookPageMatch(activePage.url(), notebookUrl)) {
         await activePage.bringToFront().catch(() => undefined);
       } else {
-        await openNotebookPage(activePage, notebookUrl);
+        await openNotebookPage(activePage, targetUrl);
       }
-      await ensureNotebookAccessible(activePage);
-      await waitForNotebookSettled(activePage);
+
+      if (notebookUrl) {
+        await ensureNotebookAccessible(activePage);
+        await waitForNotebookSettled(activePage);
+        return;
+      }
+
+      await ensureNotebookHomeAccessible(activePage);
     },
     async askQuestion(question: PlannedQuestion): Promise<{ answer: string; citations: CitationReference[] }> {
       const activePage = await ensurePage();
@@ -268,15 +311,27 @@ async function createPlaywrightNotebookBrowserSession(input: {
       await submitQuery(activePage, inputSelector);
 
       const latestElement = await waitForStableLatestResponse(activePage, previousAnswer);
-      const responseSnapshot = await collectResponseSnapshot(activePage, latestElement);
+      await waitForStableCitationMetadata(latestElement);
+      let responseSnapshot = await collectResponseSnapshot(activePage, latestElement);
       const answer = extractNormalizedAnswerFromSnapshot(responseSnapshot);
       if (!answer) {
         throw new Error(`NotebookLM returned an empty answer for question ${question.id}`);
       }
+      let citations = extractCitationReferencesFromSnapshot(responseSnapshot.citationCandidates);
+      if (shouldRetryNotebookLMCitationCapture(citations)) {
+        const refreshedSnapshot = await recaptureLatestResponseSnapshot(activePage);
+        if (refreshedSnapshot) {
+          const refreshedCitations = extractCitationReferencesFromSnapshot(refreshedSnapshot.citationCandidates);
+          if (countRichNotebookLMCitations(refreshedCitations) > countRichNotebookLMCitations(citations)) {
+            responseSnapshot = refreshedSnapshot;
+            citations = refreshedCitations;
+          }
+        }
+      }
 
       return {
         answer,
-        citations: extractCitationReferencesFromSnapshot(responseSnapshot.citationCandidates)
+        citations
       };
     },
     async captureLatestAnswer(): Promise<{ answer: string; citations: CitationReference[] }> {
@@ -287,15 +342,27 @@ async function createPlaywrightNotebookBrowserSession(input: {
         throw new Error("Could not find a latest NotebookLM response to import.");
       }
 
-      const responseSnapshot = await collectResponseSnapshot(activePage, latestElement);
+      await waitForStableCitationMetadata(latestElement);
+      let responseSnapshot = await collectResponseSnapshot(activePage, latestElement);
       const answer = extractNormalizedAnswerFromSnapshot(responseSnapshot);
       if (!answer) {
         throw new Error("NotebookLM did not expose a readable latest answer.");
       }
+      let citations = extractCitationReferencesFromSnapshot(responseSnapshot.citationCandidates);
+      if (shouldRetryNotebookLMCitationCapture(citations)) {
+        const refreshedSnapshot = await recaptureLatestResponseSnapshot(activePage);
+        if (refreshedSnapshot) {
+          const refreshedCitations = extractCitationReferencesFromSnapshot(refreshedSnapshot.citationCandidates);
+          if (countRichNotebookLMCitations(refreshedCitations) > countRichNotebookLMCitations(citations)) {
+            responseSnapshot = refreshedSnapshot;
+            citations = refreshedCitations;
+          }
+        }
+      }
 
       return {
         answer,
-        citations: extractCitationReferencesFromSnapshot(responseSnapshot.citationCandidates)
+        citations
       };
     },
     async createNotebook(title: string): Promise<ManagedNotebookBrowserCreateResult> {
@@ -1014,7 +1081,8 @@ async function waitForStableLatestResponse(page: Page, previousAnswer: string | 
       }
 
       if (stableCount >= 3 && latestElement) {
-        return latestElement;
+        await scrollNotebookToLatest(page);
+        return (await getLatestResponseElement(page)) ?? latestElement;
       }
     }
 
@@ -1022,6 +1090,118 @@ async function waitForStableLatestResponse(page: Page, previousAnswer: string | 
   }
 
   throw new Error("Timed out waiting for NotebookLM to return a stable answer.");
+}
+
+const EMPTY_CITATION_METADATA_SETTLE_POLLS = 6;
+
+export function shouldTreatCitationMetadataAsSettled(input: {
+  signature: string;
+  latestSignature: string;
+  stableCount: number;
+  emptyStableCount: number;
+}): { stableCount: number; emptyStableCount: number; settled: boolean } {
+  const signature = normalizeControlText(input.signature);
+  const latestSignature = normalizeControlText(input.latestSignature);
+
+  if (!signature) {
+    const emptyStableCount = latestSignature ? 1 : input.emptyStableCount + 1;
+    return {
+      stableCount: 0,
+      emptyStableCount,
+      settled: emptyStableCount >= EMPTY_CITATION_METADATA_SETTLE_POLLS
+    };
+  }
+
+  const stableCount = signature === latestSignature ? input.stableCount + 1 : 1;
+  return {
+    stableCount,
+    emptyStableCount: 0,
+    settled: stableCount >= 3
+  };
+}
+
+async function waitForStableCitationMetadata(element: ElementHandle, timeoutMs = 6_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  let stableCount = 0;
+  let emptyStableCount = 0;
+  let latestSignature = "";
+
+  while (Date.now() < deadline) {
+    const signature = await element
+      .evaluate((root) => {
+        const normalize = (value: string | null | undefined): string => (value ?? "").replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
+        type QueryableNode = {
+          textContent?: string | null;
+          innerText?: string;
+          getAttribute?: (name: string) => string | null;
+          querySelector?: (selector: string) => QueryableNode | null;
+          querySelectorAll?: (selector: string) => Iterable<unknown>;
+        };
+        const markers = [...root.querySelectorAll(".citation-marker")].map((node) => {
+          const elementNode = node as QueryableNode;
+          const text = normalize(elementNode.innerText || elementNode.textContent || "");
+          const ariaNode = elementNode.querySelector?.("[aria-label]");
+          const ariaLabel = normalize(elementNode.getAttribute?.("aria-label") || ariaNode?.getAttribute?.("aria-label") || "");
+          const dialogLabel = normalize(elementNode.getAttribute?.("dialoglabel"));
+          const triggerDescription = normalize(elementNode.getAttribute?.("triggerdescription"));
+          const real = /^\d+$/.test(text) || /^\d+\s*:/.test(ariaLabel) || /citation|인용/i.test(`${dialogLabel} ${triggerDescription}`.trim());
+          if (!real) {
+            return "";
+          }
+          return `${text}|${ariaLabel}|${dialogLabel}|${triggerDescription}`;
+        });
+
+        return markers.filter(Boolean).join("||");
+      })
+      .catch(() => "");
+
+    const state = shouldTreatCitationMetadataAsSettled({
+      signature,
+      latestSignature,
+      stableCount,
+      emptyStableCount
+    });
+    stableCount = state.stableCount;
+    emptyStableCount = state.emptyStableCount;
+    latestSignature = normalizeControlText(signature);
+
+    if (state.settled) {
+      return;
+    }
+
+    await sleep(250);
+  }
+}
+
+export function countRichNotebookLMCitations(citations: CitationReference[]): number {
+  return citations.filter((citation) => hasNotebookLMCitationSnippet(citation.note)).length;
+}
+
+export function shouldRetryNotebookLMCitationCapture(citations: CitationReference[]): boolean {
+  if (citations.length < 3) {
+    return false;
+  }
+
+  return countRichNotebookLMCitations(citations) < Math.min(3, citations.length);
+}
+
+async function recaptureLatestResponseSnapshot(page: Page): Promise<NotebookLMResponseSnapshot | undefined> {
+  const notebookUrl = page.url();
+  if (!normalizeNotebookPath(notebookUrl)?.includes("/notebook/")) {
+    return undefined;
+  }
+
+  await openNotebookPage(page, notebookUrl);
+  await ensureNotebookAccessible(page);
+  await waitForNotebookSettled(page);
+  await sleep(3_000);
+  const latestElement = await waitForLatestVisibleResponse(page, 30_000);
+  if (!latestElement) {
+    return undefined;
+  }
+
+  await waitForStableCitationMetadata(latestElement, 4_000);
+  return collectResponseSnapshot(page, latestElement);
 }
 
 async function collectResponseTextSnapshot(element: ElementHandle): Promise<NotebookLMResponseSnapshot> {
@@ -1213,18 +1393,17 @@ async function collectResponseSnapshot(page: Page, element: ElementHandle): Prom
 
         return childNodes.map((child) => serializeBodyNode(child as QueryableNode)).join("");
       };
-      const collectCitationScopes = (start: QueryableNode): QueryableNode[] => {
-        const scopes: QueryableNode[] = [start];
-        let current = start.parentElement ?? null;
-        let depth = 0;
-
-        while (current && depth < 3) {
-          scopes.push(current);
-          current = current.parentElement ?? null;
-          depth += 1;
+      const getFirstMeaningfulDescendantAriaLabel = (scope: QueryableNode): string => {
+        const ariaNodes = queryAll(scope, "[aria-label]");
+        for (const node of ariaNodes) {
+          const elementNode = node as QueryableNode;
+          const ariaLabel = normalize(elementNode.getAttribute?.("aria-label"));
+          if (ariaLabel) {
+            return ariaLabel;
+          }
         }
 
-        return scopes;
+        return "";
       };
 
       const bodyTexts = dedupe(
@@ -1241,36 +1420,48 @@ async function collectResponseSnapshot(page: Page, element: ElementHandle): Prom
         (item) => item
       );
 
-      const citationScopes = collectCitationScopes(root as QueryableNode);
       let markerCounter = 0;
       const citationCandidates = dedupe(
-        citationScopes.flatMap((scope) =>
-          selectors.citationSelectors.flatMap((selector) =>
-            queryAll(scope, selector).map((node) => {
-              const elementNode = node as QueryableNode;
-              const markerNode = elementNode.closest?.(".citation-marker") ?? elementNode;
-              let markerId = normalize(markerNode.getAttribute?.(selectors.markerAttribute));
-              if (!markerId) {
-                markerCounter += 1;
-                markerId = `marker-${markerCounter}`;
-                markerNode.setAttribute?.(selectors.markerAttribute, markerId);
-              }
-              return {
-                text: normalize(elementNode.innerText || elementNode.textContent || ""),
-                ariaLabel: normalize(elementNode.getAttribute?.("aria-label")),
-                title: normalize(elementNode.getAttribute?.("title") ?? elementNode.title),
-                href: normalize(elementNode.getAttribute?.("href") ?? elementNode.href),
-                markerId,
-                selector,
-                dialogLabel: normalize(elementNode.getAttribute?.("dialoglabel")),
-                triggerDescription: normalize(elementNode.getAttribute?.("triggerdescription")),
-                dataTestId: normalize(elementNode.dataset?.testid),
-                role: normalize(elementNode.getAttribute?.("role")),
-                className: normalize(elementNode.className)
-              };
-            })
-          )
-        ),
+        queryAll(root as QueryableNode, ".citation-marker")
+          .map((node) => {
+            const markerNode = node as QueryableNode;
+            const text = normalize(markerNode.innerText || markerNode.textContent || "");
+            const ariaLabel = normalize(markerNode.getAttribute?.("aria-label")) || getFirstMeaningfulDescendantAriaLabel(markerNode);
+            const dialogLabel = normalize(markerNode.getAttribute?.("dialoglabel"));
+            const triggerDescription = normalize(markerNode.getAttribute?.("triggerdescription"));
+            if (
+              !selectors.citationSelectors.some((selector) => markerNode.matches?.(selector) || queryAll(markerNode, selector).length > 0) ||
+              !(
+                /^\d+$/.test(text) ||
+                /^\d+\s*:/.test(ariaLabel) ||
+                /citation|인용/i.test(`${dialogLabel} ${triggerDescription}`.trim())
+              )
+            ) {
+              return undefined;
+            }
+
+            let markerId = normalize(markerNode.getAttribute?.(selectors.markerAttribute));
+            if (!markerId) {
+              markerCounter += 1;
+              markerId = `marker-${markerCounter}`;
+              markerNode.setAttribute?.(selectors.markerAttribute, markerId);
+            }
+
+            return {
+              text,
+              ariaLabel,
+              title: normalize(markerNode.getAttribute?.("title") ?? markerNode.title),
+              href: normalize(markerNode.getAttribute?.("href") ?? markerNode.href),
+              markerId,
+              selector: ".citation-marker",
+              dialogLabel,
+              triggerDescription,
+              dataTestId: normalize(markerNode.dataset?.testid),
+              role: normalize(markerNode.getAttribute?.("role")),
+              className: normalize(markerNode.className)
+            };
+          })
+          .filter((candidate): candidate is NonNullable<typeof candidate> => Boolean(candidate)),
         (item) => JSON.stringify(item)
       );
 
@@ -1426,15 +1617,28 @@ async function collectCitationPopoverTexts(
       continue;
     }
 
-    const previousPopoverTexts = await captureVisibleCitationPopoverTexts(page);
-
     try {
-      await markerLocator.hover();
+      await markerLocator.scrollIntoViewIfNeeded().catch(() => undefined);
+      await dismissCitationPopover(page);
+      const previousPopoverTexts = await captureVisibleCitationPopoverTexts(page);
+      await markerLocator.click({ timeout: 1_000 });
       const popoverText = await waitForCitationPopoverText(page, previousPopoverTexts, 2_000);
       if (popoverText) {
         popoverTextsByMarkerId.set(markerId, popoverText);
       }
-    } catch {}
+    } catch {
+      try {
+        await dismissCitationPopover(page);
+        const previousPopoverTexts = await captureVisibleCitationPopoverTexts(page);
+        await markerLocator.hover({ timeout: 1_000 });
+        const popoverText = await waitForCitationPopoverText(page, previousPopoverTexts, 1_500);
+        if (popoverText) {
+          popoverTextsByMarkerId.set(markerId, popoverText);
+        }
+      } catch {}
+    } finally {
+      await dismissCitationPopover(page);
+    }
   }
 
   return popoverTextsByMarkerId;
@@ -1491,6 +1695,11 @@ async function waitForCitationPopoverText(page: Page, previousTexts: string[], t
   }
 
   return undefined;
+}
+
+async function dismissCitationPopover(page: Page): Promise<void> {
+  await page.keyboard.press("Escape").catch(() => undefined);
+  await sleep(100);
 }
 
 async function clearTemporaryCitationMarkers(page: Page, markerAttribute: string): Promise<void> {

@@ -187,7 +187,7 @@ describe("operator CLI workflow", () => {
       expect.arrayContaining([
         expect.objectContaining({
           kind: "validate_attach",
-          command: expect.stringContaining("sourceloop attach validate attach-research-browser")
+          command: "sourceloop attach validate attach-research-browser"
         })
       ])
     );
