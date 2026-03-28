@@ -1,6 +1,6 @@
 {
   "name": "sourceloop",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "NotebookLM-centered research orchestration pipeline",
   "license": "MIT",
   "type": "module",
