@@ -1,5 +1,6 @@
 import path from "node:path";
 import type { ChromeAttachTarget } from "../../schemas/attach.js";
+import type { ManagedNotebookImport, ManagedNotebookSetup } from "../../schemas/managed-notebook.js";
 import type { NotebookBinding } from "../../schemas/notebook.js";
 import type { NotebookSourceManifest } from "../../schemas/notebook-source.js";
 import type { OutputArtifact, PlannedQuestion, QAExchange, QARunIndex, QuestionBatch } from "../../schemas/run.js";
@@ -80,6 +81,26 @@ export function getNotebookSourceManifestNote(workspace: LoadedWorkspace, manife
     title,
     fileName: readableFileName(title, manifest.id),
     absolutePath: path.join(vault.notebookSourcesDir, readableFileName(title, manifest.id))
+  };
+}
+
+export function getManagedNotebookSetupNote(workspace: LoadedWorkspace, setup: ManagedNotebookSetup): NoteIdentity {
+  const vault = getVaultPaths(workspace);
+  const title = normalizeTitle(`Managed ${setup.notebookBindingId}`, setup.id);
+  return {
+    title,
+    fileName: readableFileName(title, setup.id),
+    absolutePath: path.join(vault.notebookSetupsDir, readableFileName(title, setup.id))
+  };
+}
+
+export function getManagedNotebookImportNote(workspace: LoadedWorkspace, managedImport: ManagedNotebookImport): NoteIdentity {
+  const vault = getVaultPaths(workspace);
+  const title = normalizeTitle(managedImport.title, managedImport.id);
+  return {
+    title,
+    fileName: readableFileName(title, managedImport.id),
+    absolutePath: path.join(vault.notebookImportsDir, readableFileName(title, managedImport.id))
   };
 }
 

@@ -4,6 +4,7 @@ import { listChromeAttachTargets } from "../attach/manage-targets.js";
 import { loadWorkspace, type LoadedWorkspace } from "../workspace/load-workspace.js";
 import { getRunPaths, getVaultPaths } from "../vault/paths.js";
 import { notebookBindingSchema, type NotebookBinding } from "../../schemas/notebook.js";
+import { managedNotebookImportSchema, managedNotebookSetupSchema, type ManagedNotebookImport, type ManagedNotebookSetup } from "../../schemas/managed-notebook.js";
 import { notebookSourceManifestSchema, type NotebookSourceManifest } from "../../schemas/notebook-source.js";
 import { runIndexSchema, questionBatchSchema, type QARunIndex, type QuestionBatch } from "../../schemas/run.js";
 import { sourceDocumentSchema, type SourceDocument } from "../../schemas/source.js";
@@ -11,7 +12,7 @@ import { type ResearchTopic, type TopicStatus } from "../../schemas/topic.js";
 import { listTopics } from "../topics/manage-topics.js";
 
 export type OperatorNextAction = {
-  kind: "create_topic" | "bind_notebook" | "declare_evidence" | "plan_questions" | "resume_run" | "run_planned";
+  kind: "create_topic" | "bind_notebook" | "declare_evidence" | "import_managed_source" | "plan_questions" | "resume_run" | "run_planned";
   message: string;
   command: string;
   topicId?: string;
@@ -26,6 +27,7 @@ export type TopicStatusSummary = {
   notebookBindingCount: number;
   localSourceCount: number;
   notebookEvidenceCount: number;
+  managedNotebookImportCount: number;
   runCount: number;
   plannedRunCount: number;
   incompleteRunCount: number;
@@ -51,6 +53,8 @@ export type WorkspaceStatusReport = {
     notebookBindingCount: number;
     localSourceCount: number;
     notebookEvidenceCount: number;
+    managedNotebookCount: number;
+    managedImportCount: number;
     attachTargetCount: number;
     runCount: number;
     plannedRunCount: number;
@@ -89,6 +93,8 @@ type WorkspaceArtifacts = {
   notebookBindings: NotebookBinding[];
   sources: SourceDocument[];
   notebookSourceManifests: NotebookSourceManifest[];
+  managedNotebookSetups: ManagedNotebookSetup[];
+  managedNotebookImports: ManagedNotebookImport[];
   runs: QARunIndex[];
   questionBatches: Map<string, QuestionBatch>;
   attachTargets: Awaited<ReturnType<typeof listChromeAttachTargets>>;
@@ -97,8 +103,12 @@ type WorkspaceArtifacts = {
 type BindingEvidenceSummary = {
   notebookBindingId: string;
   topicId?: string;
+  hasManagedNotebook: boolean;
   localSourceCount: number;
   alignedNotebookEvidenceCount: number;
+  importedManagedEvidenceCount: number;
+  queuedManagedImportCount: number;
+  failedManagedImportCount: number;
   hasUsableEvidence: boolean;
 };
 
@@ -117,6 +127,11 @@ export async function buildWorkspaceStatusReport(cwd?: string): Promise<Workspac
       localSourceCount: artifacts.sources.length,
       notebookEvidenceCount: artifacts.notebookSourceManifests.filter((manifest) =>
         artifacts.notebookBindings.some((binding) => binding.id === manifest.notebookBindingId)
+      ).length,
+      managedNotebookCount: artifacts.managedNotebookSetups.length,
+      managedImportCount: artifacts.managedNotebookImports.filter((managedImport) =>
+        managedImport.status === "imported" &&
+        artifacts.notebookBindings.some((binding) => binding.id === managedImport.notebookBindingId)
       ).length,
       attachTargetCount: artifacts.attachTargets.length,
       runCount: artifacts.runs.length,
@@ -167,14 +182,40 @@ export async function buildDoctorReport(cwd?: string): Promise<DoctorReport> {
     });
 
     for (const binding of bindingsMissingEvidence) {
+      const summary = bindingEvidence.get(binding.id);
       findings.push({
-        severity: "error",
+        severity: summary?.hasManagedNotebook ? "warning" : "error",
         category: "evidence",
         topicId: topic.id,
         notebookBindingId: binding.id,
-        message: `Notebook binding ${binding.id} for topic ${topic.id} has no aligned local or notebook-backed evidence.`,
-        suggestedCommand: `sourceloop notebook-source declare --topic-id ${topic.id} --notebook ${binding.id} --kind mixed --title "${topic.name} source set"`
+        message: summary?.hasManagedNotebook
+          ? `Managed notebook binding ${binding.id} for topic ${topic.id} has no imported evidence yet.`
+          : `Notebook binding ${binding.id} for topic ${topic.id} has no aligned local or notebook-backed evidence.`,
+        suggestedCommand: summary?.hasManagedNotebook
+          ? `sourceloop notebook-import --notebook ${binding.id} --url "https://..."`
+          : `sourceloop notebook-source declare --topic-id ${topic.id} --notebook ${binding.id} --kind mixed --title "${topic.name} source set"`
       });
+
+      if ((summary?.queuedManagedImportCount ?? 0) > 0) {
+        findings.push({
+          severity: "info",
+          category: "evidence",
+          topicId: topic.id,
+          notebookBindingId: binding.id,
+          message: `Managed notebook binding ${binding.id} has queued imports that are not yet counted as usable evidence.`
+        });
+      }
+
+      if ((summary?.failedManagedImportCount ?? 0) > 0) {
+        findings.push({
+          severity: "warning",
+          category: "evidence",
+          topicId: topic.id,
+          notebookBindingId: binding.id,
+          message: `Managed notebook binding ${binding.id} has failed imports that need to be retried.`,
+          suggestedCommand: `sourceloop notebook-import --notebook ${binding.id} --url "https://..." --force`
+        });
+      }
     }
   }
 
@@ -199,6 +240,18 @@ export async function buildDoctorReport(cwd?: string): Promise<DoctorReport> {
         topicId: manifest.topicId,
         notebookBindingId: manifest.notebookBindingId,
         message: `Notebook source manifest ${manifest.id} points to missing notebook binding ${manifest.notebookBindingId}.`
+      });
+    }
+  }
+
+  for (const managedImport of artifacts.managedNotebookImports) {
+    if (!bindingIds.has(managedImport.notebookBindingId)) {
+      findings.push({
+        severity: "warning",
+        category: "binding",
+        topicId: managedImport.topicId,
+        notebookBindingId: managedImport.notebookBindingId,
+        message: `Managed notebook import ${managedImport.id} points to missing notebook binding ${managedImport.notebookBindingId}.`
       });
     }
   }
@@ -261,7 +314,7 @@ export function formatWorkspaceStatusReport(report: WorkspaceStatusReport): stri
       ? ["- none"]
       : report.topics.map(
           (topic) =>
-            `- ${topic.id} [${topic.status}] notebooks:${topic.notebookBindingCount} evidence:${topic.localSourceCount + topic.notebookEvidenceCount} runs:${topic.runCount}`
+            `- ${topic.id} [${topic.status}] notebooks:${topic.notebookBindingCount} evidence:${topic.localSourceCount + topic.notebookEvidenceCount + topic.managedNotebookImportCount} runs:${topic.runCount}`
         );
 
   const runLines =
@@ -285,7 +338,7 @@ export function formatWorkspaceStatusReport(report: WorkspaceStatusReport): stri
     "Summary",
     `- Topics: ${report.summary.topicCount}`,
     `- Notebook Bindings: ${report.summary.notebookBindingCount}`,
-    `- Evidence: ${report.summary.localSourceCount + report.summary.notebookEvidenceCount}`,
+    `- Evidence: ${report.summary.localSourceCount + report.summary.notebookEvidenceCount + report.summary.managedImportCount}`,
     `- Runs: ${report.summary.runCount} (${report.summary.incompleteRunCount} incomplete, ${report.summary.completedRunCount} completed)`,
     "",
     "Topics",
@@ -320,11 +373,22 @@ export function formatDoctorReport(report: DoctorReport): string {
 async function loadWorkspaceArtifacts(cwd?: string): Promise<WorkspaceArtifacts> {
   const workspace = await loadWorkspace(cwd);
   const vault = getVaultPaths(workspace);
-  const [topics, notebookBindings, sources, notebookSourceManifests, runs, attachTargets] = await Promise.all([
+  const [
+    topics,
+    notebookBindings,
+    sources,
+    notebookSourceManifests,
+    managedNotebookSetups,
+    managedNotebookImports,
+    runs,
+    attachTargets
+  ] = await Promise.all([
     listTopics(workspace.rootDir),
     readJsonDirectory(vault.notebooksDir, notebookBindingSchema),
     readJsonDirectory(vault.sourcesDir, sourceDocumentSchema),
     readJsonDirectory(vault.notebookSourcesDir, notebookSourceManifestSchema),
+    readJsonDirectory(vault.notebookSetupsDir, managedNotebookSetupSchema),
+    readJsonDirectory(vault.notebookImportsDir, managedNotebookImportSchema),
     readJsonDirectory(vault.runsDir, runIndexSchema, "index.json"),
     listChromeAttachTargets(workspace.rootDir)
   ]);
@@ -346,6 +410,8 @@ async function loadWorkspaceArtifacts(cwd?: string): Promise<WorkspaceArtifacts>
     notebookBindings,
     sources,
     notebookSourceManifests,
+    managedNotebookSetups,
+    managedNotebookImports,
     runs,
     questionBatches,
     attachTargets
@@ -362,6 +428,12 @@ function buildTopicSummaries(artifacts: WorkspaceArtifacts): TopicStatusSummary[
       const notebookEvidenceCount = artifacts.notebookSourceManifests.filter(
         (manifest) => manifest.topicId === topic.id && bindingIds.has(manifest.notebookBindingId)
       ).length;
+      const managedNotebookImportCount = artifacts.managedNotebookImports.filter(
+        (managedImport) =>
+          managedImport.topicId === topic.id &&
+          managedImport.status === "imported" &&
+          bindingIds.has(managedImport.notebookBindingId)
+      ).length;
       const runs = artifacts.runs.filter((run) => run.topicId === topic.id);
 
       return {
@@ -370,12 +442,14 @@ function buildTopicSummaries(artifacts: WorkspaceArtifacts): TopicStatusSummary[
         status: deriveTopicStatus({
           localSourceCount,
           notebookEvidenceCount,
+          managedNotebookImportCount,
           notebookBindingCount: topicBindings.length,
           runs
         }),
         notebookBindingCount: topicBindings.length,
         localSourceCount,
         notebookEvidenceCount,
+        managedNotebookImportCount,
         runCount: runs.length,
         plannedRunCount: runs.filter((run) => run.status === "planned").length,
         incompleteRunCount: runs.filter((run) => run.status === "incomplete").length,
@@ -392,15 +466,26 @@ function buildBindingEvidenceSummaries(artifacts: WorkspaceArtifacts): Map<strin
       const alignedNotebookEvidenceCount = artifacts.notebookSourceManifests.filter(
         (manifest) => manifest.topicId === binding.topicId && manifest.notebookBindingId === binding.id
       ).length;
+      const managedImports = artifacts.managedNotebookImports.filter(
+        (managedImport) => managedImport.topicId === binding.topicId && managedImport.notebookBindingId === binding.id
+      );
+      const importedManagedEvidenceCount = managedImports.filter((managedImport) => managedImport.status === "imported").length;
+      const queuedManagedImportCount = managedImports.filter((managedImport) => managedImport.status === "queued").length;
+      const failedManagedImportCount = managedImports.filter((managedImport) => managedImport.status === "failed").length;
+      const hasManagedNotebook = artifacts.managedNotebookSetups.some((setup) => setup.notebookBindingId === binding.id);
 
       return [
         binding.id,
         {
           notebookBindingId: binding.id,
           ...(binding.topicId ? { topicId: binding.topicId } : {}),
+          hasManagedNotebook,
           localSourceCount,
           alignedNotebookEvidenceCount,
-          hasUsableEvidence: localSourceCount + alignedNotebookEvidenceCount > 0
+          importedManagedEvidenceCount,
+          queuedManagedImportCount,
+          failedManagedImportCount,
+          hasUsableEvidence: localSourceCount + alignedNotebookEvidenceCount + importedManagedEvidenceCount > 0
         }
       ] satisfies [string, BindingEvidenceSummary];
     })
@@ -471,12 +556,17 @@ function recommendNextActions(
     );
 
     if (missingEvidenceBinding) {
+      const summary = bindingEvidence.get(missingEvidenceBinding.id);
       actions.push({
-        kind: "declare_evidence",
+        kind: summary?.hasManagedNotebook ? "import_managed_source" : "declare_evidence",
         topicId: topic.id,
         notebookBindingId: missingEvidenceBinding.id,
-        message: `Declare evidence for topic ${topic.id}.`,
-        command: `sourceloop notebook-source declare --topic-id ${topic.id} --notebook ${missingEvidenceBinding.id} --kind mixed --title "${topic.name} source set"`
+        message: summary?.hasManagedNotebook
+          ? `Import sources into managed notebook ${missingEvidenceBinding.id}.`
+          : `Declare evidence for topic ${topic.id}.`,
+        command: summary?.hasManagedNotebook
+          ? `sourceloop notebook-import --notebook ${missingEvidenceBinding.id} --url "https://..."`
+          : `sourceloop notebook-source declare --topic-id ${topic.id} --notebook ${missingEvidenceBinding.id} --kind mixed --title "${topic.name} source set"`
       });
       continue;
     }
@@ -528,6 +618,7 @@ function dedupeActions(actions: OperatorNextAction[]): OperatorNextAction[] {
 function deriveTopicStatus(input: {
   localSourceCount: number;
   notebookEvidenceCount: number;
+  managedNotebookImportCount: number;
   notebookBindingCount: number;
   runs: QARunIndex[];
 }): TopicStatus {
@@ -542,10 +633,10 @@ function deriveTopicStatus(input: {
     return "researched";
   }
 
-  if (input.localSourceCount + input.notebookEvidenceCount > 0 && input.notebookBindingCount > 0) {
+  if (input.localSourceCount + input.notebookEvidenceCount + input.managedNotebookImportCount > 0 && input.notebookBindingCount > 0) {
     return "ready_for_planning";
   }
-  if (input.localSourceCount + input.notebookEvidenceCount > 0 || input.notebookBindingCount > 0) {
+  if (input.localSourceCount + input.notebookEvidenceCount + input.managedNotebookImportCount > 0 || input.notebookBindingCount > 0) {
     return "collecting_sources";
   }
   return "initialized";

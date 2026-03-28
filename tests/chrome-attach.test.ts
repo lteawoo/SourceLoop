@@ -273,6 +273,15 @@ function createFailingSessionFactory(
         async askQuestion() {
           throw new Error("askQuestion should not run when preflight fails");
         },
+        async captureLatestAnswer() {
+          throw new Error("captureLatestAnswer should not run when preflight fails");
+        },
+        async createNotebook() {
+          throw new Error("createNotebook should not run when preflight fails");
+        },
+        async importSource() {
+          throw new Error("importSource should not run when preflight fails");
+        },
         async close() {}
       };
     }
@@ -299,6 +308,22 @@ function createSuccessSessionFactory(options: {
                 sourcePath: "vault/sources/source-1.md"
               }
             ]
+          };
+        },
+        async captureLatestAnswer() {
+          return {
+            answer: "latest attached answer",
+            citations: []
+          };
+        },
+        async createNotebook() {
+          return {
+            notebookUrl: "https://notebooklm.google.com/notebook/created"
+          };
+        },
+        async importSource() {
+          return {
+            status: "imported" as const
           };
         },
         async close() {}

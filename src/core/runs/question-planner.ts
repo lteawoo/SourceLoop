@@ -16,6 +16,7 @@ import { writeJsonFile } from "../../lib/write-json.js";
 import { slugify } from "../../lib/slugify.js";
 import { loadNotebookBinding } from "./load-artifacts.js";
 import { listNotebookSourceManifests } from "../notebooks/manage-notebook-source-manifests.js";
+import { listManagedNotebookImports } from "../notebooks/manage-managed-notebooks.js";
 import { loadTopic, refreshTopicArtifacts } from "../topics/manage-topics.js";
 import { loadChromeAttachTarget } from "../attach/manage-targets.js";
 import { getVaultPaths } from "../vault/paths.js";
@@ -159,10 +160,17 @@ async function preflightTopicPlanningContext(
       corpus.notebookSourceManifestIds.includes(manifest.id) &&
       manifest.notebookBindingId === binding.id
   ).length;
-  const evidenceCount = corpus.sourceIds.length + matchingNotebookEvidenceCount;
+  const managedNotebookImports = await listManagedNotebookImports(cwd);
+  const matchingManagedEvidenceCount = managedNotebookImports.filter(
+    (managedImport) =>
+      corpus.managedNotebookImportIds.includes(managedImport.id) &&
+      managedImport.notebookBindingId === binding.id &&
+      managedImport.status === "imported"
+  ).length;
+  const evidenceCount = corpus.sourceIds.length + matchingNotebookEvidenceCount + matchingManagedEvidenceCount;
   if (evidenceCount === 0) {
     throw new Error(
-      `Topic ${corpus.topicId} has no declared evidence aligned to notebook binding ${binding.id}. Ingest topic-backed material or declare a notebook-source manifest for this notebook before planning NotebookLM questions.`
+      `Topic ${corpus.topicId} has no declared evidence aligned to notebook binding ${binding.id}. Ingest topic-backed material, declare a notebook-source manifest, or import managed sources for this notebook before planning NotebookLM questions.`
     );
   }
 }

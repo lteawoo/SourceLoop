@@ -12,6 +12,8 @@ User-facing flows in scope:
 - Workspace status and doctor diagnostics
 - Topic creation and inspection
 - Topic-linked source ingest
+- Managed notebook creation
+- Managed notebook source import
 - Chrome attach registration and validation
 - Topic notebook binding
 - Deep question planning
@@ -109,9 +111,18 @@ Expected topic id:
 topic-professional-web-design-with-claude-code
 ```
 
-### 3. Prepare the existing NotebookLM source bundle
+### 3. Ingest a local source
 
-NotebookLM may already contain the real YouTube source. In the preferred flow, declare that notebook-backed source bundle after the notebook binding is created instead of creating a fake local note.
+Run:
+
+```bash
+echo "Professional Web Design with Claude Code notes" > research-notes.md
+
+sourceloop ingest research-notes.md \
+  --topic topic-professional-web-design-with-claude-code
+```
+
+Capture the emitted `source-id` if you plan to import that specific local source into the managed notebook.
 
 ### 4. Launch Chrome manually with remote debugging
 
@@ -175,7 +186,44 @@ Check:
 - shell prompt returns
 - attached Chrome stays open
 
-### 7. Create the notebook binding
+### 7. Create a managed notebook
+
+Run:
+
+```bash
+sourceloop notebook-create \
+  --name "Claude Code Web Design" \
+  --topic-id topic-professional-web-design-with-claude-code \
+  --attach-target attach-test-chrome
+```
+
+Check:
+
+- notebook binding note/json exists
+- managed notebook setup note/json exists
+- topic corpus now includes the notebook binding
+
+### 8. Import managed sources into the notebook
+
+Run at least one local-source import and one remote URL import:
+
+```bash
+sourceloop notebook-import \
+  --notebook notebook-claude-code-web-design \
+  --source-id <source-id>
+
+sourceloop notebook-import \
+  --notebook notebook-claude-code-web-design \
+  --url "https://youtube.com/watch?v=<real-video-id>"
+```
+
+Check:
+
+- `vault/notebook-imports/*.md` and `*.json` are created
+- imported items move topic readiness toward `ready_for_planning`
+- queued or failed imports are visible in `sourceloop doctor`
+
+### 9. Create a notebook binding instead when reusing an existing notebook
 
 Run:
 
@@ -187,7 +235,7 @@ sourceloop notebook-bind \
   --attach-target attach-test-chrome
 ```
 
-### 8. Declare the notebook-backed source bundle
+### 10. Declare the notebook-backed source bundle when NotebookLM already contains the real source set
 
 Run:
 
@@ -200,7 +248,7 @@ sourceloop notebook-source declare \
   --ref "https://youtube.com/playlist?list=<real-playlist-id>"
 ```
 
-### 9. Create a question plan
+### 11. Create a question plan
 
 Run:
 
@@ -220,7 +268,7 @@ sourceloop plan \
   --families core,execution
 ```
 
-### 10. Run NotebookLM end to end
+### 12. Run NotebookLM end to end
 
 Run:
 
@@ -253,7 +301,7 @@ sourceloop run <run-id> \
   --show-browser
 ```
 
-### 11. Import the latest existing NotebookLM answer without asking a new question
+### 13. Import the latest existing NotebookLM answer without asking a new question
 
 Use this when a reply already exists in NotebookLM and you want to backfill the latest answer into the run archive.
 
@@ -271,7 +319,7 @@ sourceloop import-latest <run-id> \
   --show-browser
 ```
 
-### 12. Check operator-facing structured output
+### 14. Check operator-facing structured output
 
 Run:
 
@@ -279,6 +327,8 @@ Run:
 sourceloop status --json
 sourceloop doctor --json
 sourceloop topic show topic-professional-web-design-with-claude-code --json
+sourceloop notebook-create --name "Replay Notebook" --topic-id topic-professional-web-design-with-claude-code --attach-target attach-test-chrome --json
+sourceloop notebook-import --notebook notebook-claude-code-web-design --url "https://youtube.com/watch?v=<real-video-id>" --json
 sourceloop notebook-source list --json
 ```
 
@@ -294,7 +344,7 @@ Check:
 - the latest visible NotebookLM answer is archived
 - a new exchange note or updated next-question exchange appears in `vault/runs/<run-id>/exchanges/`
 
-### 12. Inspect the archive
+### 15. Inspect the archive
 
 Run:
 
@@ -308,7 +358,7 @@ cat /Users/twlee/projects/SourceLoop/tmp/demo-workspace/vault/runs/<run-id>/prof
 ls /Users/twlee/projects/SourceLoop/tmp/demo-workspace/vault/runs/<run-id>/exchanges
 ```
 
-### 13. Open in Obsidian
+### 16. Open in Obsidian
 
 Open this folder in Obsidian:
 

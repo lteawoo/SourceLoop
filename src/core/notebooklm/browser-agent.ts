@@ -3,13 +3,24 @@ import { spawn, type ChildProcess } from "node:child_process";
 import net from "node:net";
 import { chromium, type Browser, type BrowserContext, type ElementHandle, type Page } from "playwright";
 import type { ChromeAttachTarget, ChromeProfileAttachTarget } from "../../schemas/attach.js";
+import type { ManagedNotebookImportStatus } from "../../schemas/managed-notebook.js";
 import type { CitationReference, PlannedQuestion } from "../../schemas/run.js";
 import {
+  NOTEBOOKLM_ADD_SOURCE_SELECTORS,
   NOTEBOOKLM_ANSWER_BODY_SELECTORS,
   NOTEBOOKLM_CITATION_SELECTORS,
   NOTEBOOKLM_CITATION_OVERFLOW_SELECTORS,
   NOTEBOOKLM_CITATION_POPOVER_SELECTORS,
+  NOTEBOOKLM_CREATE_NOTEBOOK_SELECTORS,
   NOTEBOOKLM_DEFAULT_URL,
+  NOTEBOOKLM_IMPORT_ERROR_SELECTORS,
+  NOTEBOOKLM_IMPORT_FILE_INPUT_SELECTORS,
+  NOTEBOOKLM_IMPORT_FILE_OPTION_SELECTORS,
+  NOTEBOOKLM_IMPORT_SUCCESS_CANDIDATE_SELECTORS,
+  NOTEBOOKLM_IMPORT_SUBMIT_SELECTORS,
+  NOTEBOOKLM_IMPORT_URL_INPUT_SELECTORS,
+  NOTEBOOKLM_IMPORT_URL_OPTION_SELECTORS,
+  NOTEBOOKLM_NOTEBOOK_TITLE_INPUT_SELECTORS,
   NOTEBOOKLM_QUERY_INPUT_SELECTORS,
   NOTEBOOKLM_RESPONSE_SELECTORS,
   NOTEBOOKLM_SUBMIT_SELECTORS,
@@ -105,10 +116,40 @@ export class ChromeAttachValidationError extends Error {
   }
 }
 
+export type ManagedNotebookBrowserCreateResult = {
+  notebookUrl: string;
+};
+
+export type ManagedNotebookBrowserImportInput =
+  | {
+      importKind: "file_upload";
+      title: string;
+      sourceUri: string;
+      filePath: string;
+    }
+  | {
+      importKind: "youtube_url" | "web_url";
+      title: string;
+      sourceUri: string;
+      url: string;
+    };
+
+export type ManagedNotebookBrowserImportResult = {
+  status: ManagedNotebookImportStatus;
+  failureReason?: string;
+};
+
+export type NotebookLMImportSuccessCandidate = {
+  signature: string;
+  text: string;
+};
+
 export interface NotebookBrowserSession {
   preflight(notebookUrl: string): Promise<void>;
   askQuestion(question: PlannedQuestion): Promise<{ answer: string; citations: CitationReference[] }>;
   captureLatestAnswer(): Promise<{ answer: string; citations: CitationReference[] }>;
+  createNotebook(title: string): Promise<ManagedNotebookBrowserCreateResult>;
+  importSource(input: ManagedNotebookBrowserImportInput): Promise<ManagedNotebookBrowserImportResult>;
   close(): Promise<void>;
 }
 
@@ -249,6 +290,58 @@ async function createPlaywrightNotebookBrowserSession(input: {
         answer,
         citations: extractCitationReferencesFromSnapshot(responseSnapshot.citationCandidates)
       };
+    },
+    async createNotebook(title: string): Promise<ManagedNotebookBrowserCreateResult> {
+      const activePage = await ensurePage();
+      await openNotebookPage(activePage, NOTEBOOKLM_DEFAULT_URL);
+      await ensureNotebookHomeAccessible(activePage);
+      await clickFirstVisibleLocator(activePage, NOTEBOOKLM_CREATE_NOTEBOOK_SELECTORS, "Could not find a NotebookLM create notebook control.");
+      await waitForNotebookUrl(activePage, 30_000);
+      await waitForNotebookSettled(activePage).catch(() => undefined);
+      await bestEffortFillNotebookTitle(activePage, title);
+
+      return {
+        notebookUrl: activePage.url()
+      };
+    },
+    async importSource(input: ManagedNotebookBrowserImportInput): Promise<ManagedNotebookBrowserImportResult> {
+      const activePage = await ensurePage();
+      await waitForNotebookSettled(activePage);
+      const baselineCandidates = await captureImportSuccessCandidates(activePage, input).catch(() => []);
+
+      try {
+        await clickFirstVisibleLocator(activePage, NOTEBOOKLM_ADD_SOURCE_SELECTORS, "Could not find a NotebookLM add source control.");
+
+        if (input.importKind === "file_upload") {
+          await bestEffortClickAny(activePage, NOTEBOOKLM_IMPORT_FILE_OPTION_SELECTORS);
+          const fileSelector = await waitForFirstExistingSelector(activePage, NOTEBOOKLM_IMPORT_FILE_INPUT_SELECTORS, 10_000);
+          await activePage.locator(fileSelector).first().setInputFiles(input.filePath);
+        } else {
+          await bestEffortClickAny(activePage, NOTEBOOKLM_IMPORT_URL_OPTION_SELECTORS);
+          const urlSelector = await waitForFirstVisibleSelector(activePage, NOTEBOOKLM_IMPORT_URL_INPUT_SELECTORS, 10_000);
+          await clearInputLike(activePage, urlSelector);
+          await fillInputLike(activePage, urlSelector, input.url);
+          await clickFirstVisibleLocator(activePage, NOTEBOOKLM_IMPORT_SUBMIT_SELECTORS, "Could not find a NotebookLM import submit control.");
+        }
+
+        const failureReason = await waitForImportFailure(activePage, 5_000);
+        if (failureReason) {
+          return {
+            status: "failed",
+            failureReason
+          };
+        }
+
+        const imported = await waitForImportSuccess(activePage, baselineCandidates, input, 12_000);
+        return {
+          status: imported ? "imported" : "queued"
+        };
+      } catch (error) {
+        return {
+          status: "failed",
+          failureReason: formatError(error)
+        };
+      }
     },
     async close(): Promise<void> {
       const spawnedProcess = state.spawnedProcess;
@@ -463,6 +556,26 @@ async function ensureNotebookAccessible(page: Page): Promise<void> {
   }
 }
 
+async function ensureNotebookHomeAccessible(page: Page): Promise<void> {
+  await page.waitForLoadState("domcontentloaded");
+  await sleep(750);
+
+  const currentUrl = page.url();
+  if (!currentUrl.startsWith("https://notebooklm.google.com/")) {
+    if (currentUrl.includes("accounts.google.com")) {
+      throw new ChromeAttachValidationError(
+        "notebooklm_sign_in_required",
+        "Chrome is reachable, but NotebookLM redirected to Google sign-in. Sign in to NotebookLM in this Chrome target first."
+      );
+    }
+
+    throw new ChromeAttachValidationError(
+      "notebooklm_preflight_failed",
+      `Chrome is reachable, but NotebookLM home did not open successfully: ${currentUrl}`
+    );
+  }
+}
+
 async function waitForNotebookSettled(page: Page, knownInputSelector?: string): Promise<void> {
   await page.waitForLoadState("domcontentloaded");
   await page.waitForLoadState("networkidle", { timeout: 5_000 }).catch(() => undefined);
@@ -497,6 +610,51 @@ async function waitForFirstVisibleSelector(page: Page, selectors: readonly strin
   throw new Error("Could not find a visible NotebookLM query input.");
 }
 
+async function clickFirstVisibleLocator(page: Page, selectors: readonly string[], errorMessage: string): Promise<void> {
+  for (const selector of selectors) {
+    const locator = page.locator(selector).first();
+    try {
+      if ((await locator.count()) > 0 && (await locator.isVisible())) {
+        await locator.click();
+        return;
+      }
+    } catch {}
+  }
+
+  throw new Error(errorMessage);
+}
+
+async function waitForFirstExistingSelector(page: Page, selectors: readonly string[], timeout = 10_000): Promise<string> {
+  const deadline = Date.now() + timeout;
+
+  while (Date.now() < deadline) {
+    for (const selector of selectors) {
+      try {
+        if ((await page.locator(selector).count()) > 0) {
+          return selector;
+        }
+      } catch {}
+    }
+    await sleep(250);
+  }
+
+  throw new Error("Could not find a matching NotebookLM control.");
+}
+
+async function bestEffortClickAny(page: Page, selectors: readonly string[]): Promise<boolean> {
+  for (const selector of selectors) {
+    const locator = page.locator(selector).first();
+    try {
+      if ((await locator.count()) > 0 && (await locator.isVisible())) {
+        await locator.click();
+        return true;
+      }
+    } catch {}
+  }
+
+  return false;
+}
+
 async function waitForUsableQueryInput(page: Page, selector: string, timeout = 10_000): Promise<void> {
   const deadline = Date.now() + timeout;
 
@@ -519,6 +677,34 @@ async function waitForUsableQueryInput(page: Page, selector: string, timeout = 1
   }
 
   throw new Error("NotebookLM query input did not become usable in time.");
+}
+
+async function waitForNotebookUrl(page: Page, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    const currentUrl = page.url();
+    if (normalizeNotebookPath(currentUrl)?.includes("/notebook/")) {
+      return;
+    }
+    await sleep(250);
+  }
+
+  throw new Error("Timed out waiting for NotebookLM to open a notebook page.");
+}
+
+async function bestEffortFillNotebookTitle(page: Page, title: string): Promise<void> {
+  for (const selector of NOTEBOOKLM_NOTEBOOK_TITLE_INPUT_SELECTORS) {
+    const locator = page.locator(selector).first();
+    try {
+      if ((await locator.count()) > 0 && (await locator.isVisible())) {
+        await clearInputLike(page, selector);
+        await fillInputLike(page, selector, title);
+        await page.keyboard.press("Enter").catch(() => undefined);
+        return;
+      }
+    } catch {}
+  }
 }
 
 async function snapshotLatestResponse(page: Page): Promise<string | null> {
@@ -1117,12 +1303,20 @@ function normalizeControlText(value?: string | null): string {
 }
 
 async function clearQueryInput(page: Page, selector: string): Promise<void> {
+  await clearInputLike(page, selector);
+}
+
+async function clearInputLike(page: Page, selector: string): Promise<void> {
   await page.click(selector);
   await page.keyboard.press(process.platform === "darwin" ? "Meta+A" : "Control+A");
   await page.keyboard.press("Backspace");
 }
 
 async function setQueryInputText(page: Page, selector: string, text: string): Promise<void> {
+  await fillInputLike(page, selector, text);
+}
+
+async function fillInputLike(page: Page, selector: string, text: string): Promise<void> {
   const input = page.locator(selector).first();
   await input.click();
 
@@ -1134,8 +1328,12 @@ async function setQueryInputText(page: Page, selector: string, text: string): Pr
   await page.locator(selector).evaluate(
     (element, value) => {
       const candidate = element as { tagName?: string; value?: string; dispatchEvent?: (event: Event) => boolean };
-      if (candidate.tagName?.toLowerCase() !== "textarea" || typeof candidate.value !== "string" || !candidate.dispatchEvent) {
-        throw new Error("NotebookLM query input is not a textarea.");
+      if (
+        (candidate.tagName?.toLowerCase() !== "textarea" && candidate.tagName?.toLowerCase() !== "input") ||
+        typeof candidate.value !== "string" ||
+        !candidate.dispatchEvent
+      ) {
+        throw new Error("NotebookLM input is not a text field.");
       }
       candidate.value = value;
       candidate.dispatchEvent(new Event("input", { bubbles: true }));
@@ -1215,6 +1413,149 @@ async function clickSubmitButton(page: Page, inputSelector: string): Promise<boo
   } finally {
     await submitHandle.dispose();
   }
+}
+
+async function waitForImportFailure(page: Page, timeoutMs: number): Promise<string | undefined> {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    for (const selector of NOTEBOOKLM_IMPORT_ERROR_SELECTORS) {
+      const locator = page.locator(selector).first();
+      try {
+        if ((await locator.count()) > 0 && (await locator.isVisible())) {
+          const text = normalizeControlText(await locator.innerText());
+          if (text) {
+            return text;
+          }
+        }
+      } catch {}
+    }
+    await sleep(200);
+  }
+
+  return undefined;
+}
+
+async function waitForImportSuccess(
+  page: Page,
+  baselineCandidates: NotebookLMImportSuccessCandidate[],
+  input: ManagedNotebookBrowserImportInput,
+  timeoutMs: number
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    try {
+      const currentCandidates = await captureImportSuccessCandidates(page, input);
+      if (didImportProduceNewMatchingCandidate(baselineCandidates, currentCandidates, input)) {
+        return true;
+      }
+    } catch {}
+
+    await sleep(400);
+  }
+
+  return false;
+}
+
+async function captureImportSuccessCandidates(
+  page: Page,
+  input: ManagedNotebookBrowserImportInput
+): Promise<NotebookLMImportSuccessCandidate[]> {
+  return page.evaluate(
+    ({ selectors, needles }) => {
+      const g = globalThis as unknown as {
+        document: {
+          querySelectorAll(selector: string): Iterable<unknown>;
+        };
+        getComputedStyle(element: { offsetParent: unknown }): {
+          display?: string;
+          visibility?: string;
+        };
+      };
+
+      const normalize = (value: string | null | undefined): string =>
+        (value ?? "").replace(/\s+/g, " ").trim().toLowerCase();
+
+      const isVisible = (element: {
+        offsetParent: unknown;
+      }): boolean => {
+        const style = g.getComputedStyle(element);
+        return style.display !== "none" && style.visibility !== "hidden" && element.offsetParent !== null;
+      };
+
+      const isInsideModal = (element: {
+        closest(selector: string): unknown;
+      }): boolean => Boolean(element.closest('[role="dialog"], dialog, [aria-modal="true"], .cdk-overlay-pane'));
+
+      const unique = new Map<string, NotebookLMImportSuccessCandidate>();
+      const elements = Array.from(g.document.querySelectorAll(selectors.join(","))) as Array<{
+        innerText?: string;
+        textContent?: string | null;
+        getAttribute(name: string): string | null;
+        tagName: string;
+        offsetParent: unknown;
+        closest(selector: string): unknown;
+      }>;
+
+      for (const element of elements) {
+        if (!isVisible(element) || isInsideModal(element)) {
+          continue;
+        }
+
+        const text = normalize(element.innerText || element.textContent);
+        if (!text || !needles.some((needle) => text.includes(needle))) {
+          continue;
+        }
+
+        const signature = [
+          normalize(element.getAttribute("data-testid")),
+          normalize(element.getAttribute("data-test-id")),
+          normalize(element.getAttribute("aria-label")),
+          element.tagName.toLowerCase(),
+          text
+        ].join("|");
+
+        if (!unique.has(signature)) {
+          unique.set(signature, {
+            signature,
+            text
+          });
+        }
+      }
+
+      return Array.from(unique.values());
+    },
+    {
+      selectors: [...NOTEBOOKLM_IMPORT_SUCCESS_CANDIDATE_SELECTORS],
+      needles: getManagedImportSuccessNeedles(input)
+    }
+  );
+}
+
+export function getManagedImportSuccessNeedles(input: ManagedNotebookBrowserImportInput): string[] {
+  const values = [input.title, input.sourceUri, input.importKind === "file_upload" ? input.filePath : input.url]
+    .map((value) => normalizeControlText(value).toLowerCase())
+    .filter((value): value is string => Boolean(value));
+  return Array.from(new Set(values));
+}
+
+export function didImportProduceNewMatchingCandidate(
+  baselineCandidates: NotebookLMImportSuccessCandidate[],
+  currentCandidates: NotebookLMImportSuccessCandidate[],
+  input: ManagedNotebookBrowserImportInput
+): boolean {
+  const baselineSignatures = new Set(baselineCandidates.map((candidate) => candidate.signature));
+  const needles = getManagedImportSuccessNeedles(input);
+
+  return currentCandidates.some((candidate) => {
+    if (baselineSignatures.has(candidate.signature)) {
+      return false;
+    }
+
+    const normalizedText = normalizeControlText(candidate.text);
+    return Boolean(normalizedText) && needles.some((needle) => normalizedText.includes(needle));
+  });
 }
 
 async function sleep(milliseconds: number): Promise<void> {

@@ -17,12 +17,15 @@ import {
 } from "../src/core/operator/workspace-operator.js";
 import { bindNotebook } from "../src/core/notebooks/bind-notebook.js";
 import { declareNotebookSourceManifest } from "../src/core/notebooks/manage-notebook-source-manifests.js";
+import { createManagedNotebook, importIntoManagedNotebook } from "../src/core/notebooks/manage-managed-notebooks.js";
 import { FixtureNotebookRunnerAdapter } from "../src/core/notebooklm/fixture-adapter.js";
 import { createQuestionPlan } from "../src/core/runs/question-planner.js";
 import { executeQARun } from "../src/core/runs/run-qa.js";
 import { createTopic } from "../src/core/topics/manage-topics.js";
 import { initializeWorkspace } from "../src/core/workspace/init-workspace.js";
 import { ingestSource } from "../src/core/ingest/ingest-source.js";
+import { registerChromeEndpointTarget } from "../src/core/attach/manage-targets.js";
+import type { ManagedNotebookBrowserImportInput, NotebookBrowserSession, NotebookBrowserSessionFactory } from "../src/core/notebooklm/browser-agent.js";
 
 describe("operator CLI workflow", () => {
   afterEach(() => {
@@ -403,6 +406,83 @@ describe("operator CLI workflow", () => {
     ) as { findings: unknown[] };
     expect(Array.isArray(doctorJson.findings)).toBe(true);
   });
+
+  it("surfaces managed notebook setup readiness in status and doctor", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
+    await initializeWorkspace({ directory: workspaceRoot, force: false });
+
+    const topic = await createTopic({
+      cwd: workspaceRoot,
+      name: "Managed operator topic"
+    });
+    const attachTarget = await registerChromeEndpointTarget({
+      cwd: workspaceRoot,
+      name: "Managed Operator Chrome",
+      endpoint: "http://127.0.0.1:9222"
+    });
+
+    const sessionFactory = createManagedOperatorSessionFactory({
+      createdNotebookUrl: "https://notebooklm.google.com/notebook/managed-operator",
+      importResults: [{ status: "queued" }]
+    });
+
+    const managedNotebook = await createManagedNotebook({
+      cwd: workspaceRoot,
+      topicId: topic.topic.id,
+      name: "Managed Operator Notebook",
+      attachTargetId: attachTarget.target.id,
+      sessionFactory
+    });
+
+    let statusReport = await buildWorkspaceStatusReport(workspaceRoot);
+    let doctorReport = await buildDoctorReport(workspaceRoot);
+
+    expect(statusReport.nextActions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "import_managed_source",
+          notebookBindingId: managedNotebook.binding.id
+        })
+      ])
+    );
+    expect(doctorReport.findings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          category: "evidence",
+          notebookBindingId: managedNotebook.binding.id
+        })
+      ])
+    );
+
+    await importIntoManagedNotebook({
+      cwd: workspaceRoot,
+      notebookBindingId: managedNotebook.binding.id,
+      url: "https://example.com/managed-operator-evidence",
+      sessionFactory: createManagedOperatorSessionFactory({
+        importResults: [{ status: "imported" }]
+      })
+    });
+
+    statusReport = await buildWorkspaceStatusReport(workspaceRoot);
+    doctorReport = await buildDoctorReport(workspaceRoot);
+
+    expect(statusReport.nextActions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "plan_questions",
+          topicId: topic.topic.id
+        })
+      ])
+    );
+    expect(doctorReport.findings).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          category: "evidence",
+          notebookBindingId: managedNotebook.binding.id
+        })
+      ])
+    );
+  });
 });
 
 async function captureStdout(fn: () => Promise<void>): Promise<string> {
@@ -421,4 +501,36 @@ async function captureStdout(fn: () => Promise<void>): Promise<string> {
   }
 
   return output;
+}
+
+function createManagedOperatorSessionFactory(options: {
+  createdNotebookUrl?: string;
+  importResults?: Array<{ status: "queued" | "imported" | "failed"; failureReason?: string }>;
+}): NotebookBrowserSessionFactory {
+  let importIndex = 0;
+
+  return {
+    async createSession(): Promise<NotebookBrowserSession> {
+      return {
+        async preflight() {},
+        async askQuestion() {
+          throw new Error("askQuestion is not used in managed operator workflow tests");
+        },
+        async captureLatestAnswer() {
+          throw new Error("captureLatestAnswer is not used in managed operator workflow tests");
+        },
+        async createNotebook() {
+          return {
+            notebookUrl: options.createdNotebookUrl ?? "https://notebooklm.google.com/notebook/operator-managed"
+          };
+        },
+        async importSource(_input: ManagedNotebookBrowserImportInput) {
+          const result = options.importResults?.[importIndex] ?? { status: "imported" as const };
+          importIndex += 1;
+          return result;
+        },
+        async close() {}
+      };
+    }
+  };
 }

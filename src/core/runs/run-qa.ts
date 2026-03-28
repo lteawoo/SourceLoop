@@ -18,6 +18,7 @@ import { writeJsonFile } from "../../lib/write-json.js";
 import { loadTopic, refreshTopicArtifacts } from "../topics/manage-topics.js";
 import { loadChromeAttachTarget } from "../attach/manage-targets.js";
 import { listNotebookSourceManifests } from "../notebooks/manage-notebook-source-manifests.js";
+import { listManagedNotebookImports } from "../notebooks/manage-managed-notebooks.js";
 import { makeAliases, makeTags, normalizeObsidianText, summarizeQuestionTitle } from "../../lib/obsidian.js";
 import { getExchangeNoteFromArtifact, getNotebookNote, getQuestionsNote, getRunIndexNote, getTopicIndexNote, toWikiLink } from "../vault/notes.js";
 import { buildRunIndexMarkdown } from "./render-run-note.js";
@@ -253,10 +254,17 @@ async function preflightTopicContext(
       corpus.notebookSourceManifestIds.includes(manifest.id) &&
       manifest.notebookBindingId === binding.id
   ).length;
-  const evidenceCount = corpus.sourceIds.length + matchingNotebookEvidenceCount;
+  const managedNotebookImports = await listManagedNotebookImports(cwd);
+  const matchingManagedEvidenceCount = managedNotebookImports.filter(
+    (managedImport) =>
+      corpus.managedNotebookImportIds.includes(managedImport.id) &&
+      managedImport.notebookBindingId === binding.id &&
+      managedImport.status === "imported"
+  ).length;
+  const evidenceCount = corpus.sourceIds.length + matchingNotebookEvidenceCount + matchingManagedEvidenceCount;
   if (evidenceCount === 0) {
     throw new Error(
-      `Topic ${run.topicId} has no declared evidence aligned to notebook binding ${binding.id}. Ingest topic-backed material or declare a notebook-source manifest for this notebook before running NotebookLM questions.`
+      `Topic ${run.topicId} has no declared evidence aligned to notebook binding ${binding.id}. Ingest topic-backed material, declare a notebook-source manifest, or import managed sources for this notebook before running NotebookLM questions.`
     );
   }
 }

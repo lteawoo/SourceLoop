@@ -12,6 +12,8 @@ export function getVaultPaths(workspace: LoadedWorkspace) {
     topicsDir: path.join(vaultRoot, "topics"),
     sourcesDir: path.join(vaultRoot, "sources"),
     notebookSourcesDir: path.join(vaultRoot, "notebook-sources"),
+    notebookSetupsDir: path.join(vaultRoot, "notebook-setups"),
+    notebookImportsDir: path.join(vaultRoot, "notebook-imports"),
     notebooksDir: path.join(vaultRoot, "notebooks"),
     runsDir: path.join(vaultRoot, "runs"),
     outputsDir: path.join(vaultRoot, "outputs")
