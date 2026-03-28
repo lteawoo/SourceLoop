@@ -5,6 +5,7 @@ import { FixtureNotebookRunnerAdapter } from "../core/notebooklm/fixture-adapter
 import { BrowserAgentNotebookRunnerAdapter } from "../core/notebooklm/browser-agent-adapter.js";
 import { loadChromeAttachTarget } from "../core/attach/manage-targets.js";
 import { loadNotebookBinding, loadQuestionBatch } from "../core/runs/load-artifacts.js";
+import { writeJsonOutput, writeTextOutput } from "../lib/cli-output.js";
 
 export const runCommand = new Command("run")
   .description("Execute a planned NotebookLM Q&A run")
@@ -16,6 +17,7 @@ export const runCommand = new Command("run")
   .option("--from-question <question-id>", "start execution from this planned question id")
   .option("--limit <count>", "execute at most this many new questions", parsePositiveInteger)
   .option("--show-browser", "show the browser while the browser-agent adapter runs", false)
+  .option("--json", "emit machine-readable JSON", false)
   .action(
     async (
       runId: string,
@@ -27,6 +29,7 @@ export const runCommand = new Command("run")
         fromQuestion?: string;
         limit?: number;
         showBrowser: boolean;
+        json: boolean;
       }
     ) => {
       if (options.adapter === "fixture" && !options.fixtureFile) {
@@ -49,9 +52,16 @@ export const runCommand = new Command("run")
         ...(options.limit !== undefined ? { limit: options.limit } : {})
       });
 
-      process.stdout.write(
-        `Run ${result.run.id} finished with status ${result.run.status} (${result.completedExchanges.length} exchanges archived)\n`
-      );
+      if (options.json) {
+        writeJsonOutput({
+          run: result.run,
+          completedExchangeIds: result.completedExchanges.map((exchange) => exchange.id),
+          completedExchangeCount: result.completedExchanges.length
+        });
+        return;
+      }
+
+      writeTextOutput(`Run ${result.run.id} finished with status ${result.run.status} (${result.completedExchanges.length} exchanges archived)`);
     }
   );
 

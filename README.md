@@ -40,6 +40,9 @@ Topic
 sourceloop init <workspace>
 cd <workspace>
 
+sourceloop status
+sourceloop doctor
+
 sourceloop topic create --name "AI agents market"
 
 # sign in to NotebookLM in Chrome yourself first
@@ -60,6 +63,32 @@ sourceloop notebook-source declare \
 
 sourceloop plan topic-ai-agents-market --max-questions 5 --families core,execution
 sourceloop run <run-id> --from-question <question-id> --limit 2 --show-browser
+```
+
+## Operator Commands
+
+- `sourceloop status`
+  - shows the current workspace summary, open runs, and recommended next actions
+- `sourceloop doctor`
+  - reports missing notebook bindings, missing evidence, broken attach references, and incomplete runs
+- `--json`
+  - supported on the core workflow commands used by operators and LLM agents:
+    - `topic create|list|show`
+    - `notebook-bind`
+    - `notebook-source declare|list|show`
+    - `plan`
+    - `run`
+    - `status`
+    - `doctor`
+
+Example machine-readable flow:
+
+```bash
+sourceloop status --json
+sourceloop doctor --json
+sourceloop topic create --name "AI agents market" --json
+sourceloop plan topic-ai-agents-market --max-questions 3 --json
+sourceloop run <run-id> --limit 1 --json
 ```
 
 ## Vault Structure
@@ -115,6 +144,16 @@ Still rough around:
 pnpm install
 pnpm build
 pnpm test
+```
+
+For local CLI usage:
+
+```bash
+pnpm install
+pnpm build
+pnpm link --global
+
+sourceloop --help
 ```
 
 Reference docs:

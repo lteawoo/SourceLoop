@@ -1,6 +1,7 @@
 import { Command } from "commander";
 import { createQuestionPlan } from "../core/runs/question-planner.js";
 import { loadTopic } from "../core/topics/manage-topics.js";
+import { writeJsonOutput, writeTextOutput } from "../lib/cli-output.js";
 
 export async function resolvePlanInput(
   topicOrId: string,
@@ -34,10 +35,16 @@ export const planCommand = new Command("plan")
   .option("--objective <objective>", "objective for the research run")
   .option("--max-questions <count>", "cap the number of planned questions", parsePositiveInteger)
   .option("--families <families>", "comma-separated question families to include", parseCsvList)
-  .action(async (topicOrId: string, options: { notebook?: string; objective?: string; maxQuestions?: number; families?: string[] }) => {
+  .option("--json", "emit machine-readable JSON", false)
+  .action(async (topicOrId: string, options: { notebook?: string; objective?: string; maxQuestions?: number; families?: string[]; json: boolean }) => {
     const result = await createQuestionPlan(await resolvePlanInput(topicOrId, options));
 
-    process.stdout.write(`Planned run ${result.run.id} at ${result.runDir}\n`);
+    if (options.json) {
+      writeJsonOutput(result);
+      return;
+    }
+
+    writeTextOutput(`Planned run ${result.run.id} at ${result.runDir}`);
   });
 
 function parsePositiveInteger(value: string): number {
