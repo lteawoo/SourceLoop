@@ -443,6 +443,101 @@ describe("operator CLI workflow", () => {
     );
   });
 
+  it("counts repaired managed notebook evidence for a remote-id-compatible binding", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
+    await initializeWorkspace({ directory: workspaceRoot, force: false });
+
+    const topic = await createTopic({
+      cwd: workspaceRoot,
+      name: "Managed repair evidence topic"
+    });
+
+    const legacyBinding = await bindNotebook({
+      cwd: workspaceRoot,
+      name: "Legacy Managed Binding",
+      topic: topic.topic.name,
+      topicId: topic.topic.id,
+      notebookUrl: "https://notebooklm.google.com/notebook/repair-remote-id",
+      accessMode: "owner"
+    });
+    const repairedBinding = await bindNotebook({
+      cwd: workspaceRoot,
+      id: "notebook-repair-remote-id",
+      name: "Repaired Managed Binding",
+      topic: topic.topic.name,
+      topicId: topic.topic.id,
+      notebookUrl: "https://notebooklm.google.com/notebook/repair-remote-id",
+      accessMode: "owner",
+      force: true
+    });
+
+    const setupId = "managed-notebook-setup-repair-remote-id";
+    await writeFile(
+      path.join(workspaceRoot, "vault", "notebook-setups", `${setupId}.json`),
+      JSON.stringify(
+        {
+          id: setupId,
+          type: "managed_notebook_setup",
+          topicId: topic.topic.id,
+          notebookBindingId: legacyBinding.binding.id,
+          remoteNotebookId: "repair-remote-id",
+          name: "Legacy Managed Binding",
+          attachTargetId: "attach-missing",
+          createdAt: "2026-03-28T00:00:00.000Z",
+          updatedAt: "2026-03-28T00:00:00.000Z"
+        },
+        null,
+        2
+      )
+    );
+    await writeFile(
+      path.join(workspaceRoot, "vault", "notebook-imports", "managed-import-repair-remote-id.json"),
+      JSON.stringify(
+        {
+          id: "managed-import-repair-remote-id",
+          type: "managed_notebook_import",
+          topicId: topic.topic.id,
+          notebookBindingId: legacyBinding.binding.id,
+          managedNotebookSetupId: setupId,
+          originType: "remote_url",
+          sourceUri: "https://www.youtube.com/watch?v=eMlx5fFNoYc",
+          title: "eMlx5fFNoYc",
+          importKind: "youtube_url",
+          status: "imported",
+          createdAt: "2026-03-28T00:00:00.000Z",
+          updatedAt: "2026-03-28T00:00:00.000Z"
+        },
+        null,
+        2
+      )
+    );
+
+    const statusReport = await buildWorkspaceStatusReport(workspaceRoot);
+    const repairedBindingSummary = statusReport.topics.find((candidate) => candidate.id === topic.topic.id);
+
+    expect(repairedBindingSummary).toMatchObject({
+      managedNotebookImportCount: 1,
+      status: "ready_for_planning"
+    });
+    expect(statusReport.nextActions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "plan_questions",
+          topicId: topic.topic.id
+        })
+      ])
+    );
+    expect(statusReport.nextActions).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "declare_evidence",
+          topicId: topic.topic.id,
+          notebookBindingId: repairedBinding.binding.id
+        })
+      ])
+    );
+  });
+
   it("excludes orphan notebook manifests from top-level evidence summary", async () => {
     const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
     await initializeWorkspace({ directory: workspaceRoot, force: false });
@@ -627,7 +722,8 @@ describe("operator CLI workflow", () => {
       expect.arrayContaining([
         expect.objectContaining({
           category: "evidence",
-          notebookBindingId: managedNotebook.binding.id
+          notebookBindingId: managedNotebook.binding.id,
+          message: expect.stringContaining("first imported source")
         })
       ])
     );

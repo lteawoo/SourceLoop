@@ -10,8 +10,10 @@ import { loadChromeAttachTarget } from "../attach/manage-targets.js";
 import { loadTopic, refreshTopicArtifacts } from "../topics/manage-topics.js";
 import { makeAliases, makeTags, normalizeObsidianText } from "../../lib/obsidian.js";
 import { getChromeTargetNote, getNotebookNote, getTopicIndexNote, toWikiLink } from "../vault/notes.js";
+import { canonicalizeNotebookUrl, extractNotebookResourceId } from "../notebooklm/browser-agent.js";
 
 export type BindNotebookInput = {
+  id?: string;
   name: string;
   topic: string;
   topicId?: string;
@@ -38,14 +40,17 @@ export async function bindNotebook(input: BindNotebookInput): Promise<BindNotebo
   const attachTarget = input.attachTargetId ? await loadChromeAttachTarget(input.attachTargetId, input.cwd) : undefined;
   const topic = input.topicId ? await loadTopic(input.topicId, input.cwd) : undefined;
   const topicLabel = normalizeObsidianText(topic?.topic.name ?? input.topic);
+  const canonicalNotebookUrl = canonicalizeNotebookUrl(input.notebookUrl);
+  const remoteNotebookId = extractNotebookResourceId(canonicalNotebookUrl);
 
   const binding = notebookBindingSchema.parse({
-    id: `notebook-${slugify(input.name)}`,
+    id: input.id ?? `notebook-${slugify(input.name)}`,
     type: "notebook_binding",
     name: input.name,
     topic: topicLabel,
     topicId: input.topicId,
-    notebookUrl: input.notebookUrl,
+    notebookUrl: canonicalNotebookUrl,
+    ...(remoteNotebookId ? { remoteNotebookId } : {}),
     accessMode: input.accessMode,
     description: input.description,
     topics: input.topics ?? [],

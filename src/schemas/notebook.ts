@@ -9,6 +9,7 @@ export const notebookBindingSchema = z.object({
   topic: z.string().min(1),
   topicId: z.string().min(1).optional(),
   notebookUrl: z.string().url(),
+  remoteNotebookId: z.string().min(1).optional(),
   accessMode: notebookAccessModeSchema,
   description: z.string().min(1).optional(),
   topics: z.array(z.string().min(1)).default([]),

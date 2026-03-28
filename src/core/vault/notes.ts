@@ -86,7 +86,7 @@ export function getNotebookSourceManifestNote(workspace: LoadedWorkspace, manife
 
 export function getManagedNotebookSetupNote(workspace: LoadedWorkspace, setup: ManagedNotebookSetup): NoteIdentity {
   const vault = getVaultPaths(workspace);
-  const title = normalizeTitle(`Managed ${setup.notebookBindingId}`, setup.id);
+  const title = normalizeTitle(`Managed ${setup.name ?? setup.notebookBindingId}`, setup.id);
   return {
     title,
     fileName: readableFileName(title, setup.id),
