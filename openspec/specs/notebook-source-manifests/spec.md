@@ -4,12 +4,17 @@
 TBD - created by archiving change topic-source-notebook-contract. Update Purpose after archive.
 ## Requirements
 ### Requirement: Operators SHALL be able to declare notebook-backed source manifests
-The system SHALL allow operators to record a notebook-backed source bundle as a first-class artifact tied to a topic and a notebook binding.
+The system SHALL allow operators to record notebook-backed evidence as first-class artifacts tied to a topic and a notebook binding, whether that evidence was pre-existing in NotebookLM or imported through a managed SourceLoop workflow.
 
 #### Scenario: Operator declares an existing NotebookLM source bundle
 - **WHEN** the operator creates a notebook-source manifest for a topic and bound notebook
 - **THEN** the system SHALL persist a durable manifest artifact with the topic id and notebook binding id
 - **AND** the manifest SHALL store operator-visible source metadata such as kind, title, and optional references
+
+#### Scenario: Managed import is promoted to notebook-backed evidence
+- **WHEN** a managed notebook import reaches the `imported` state
+- **THEN** the system SHALL allow that imported source to participate in notebook-backed evidence visibility and readiness checks
+- **AND** operators SHALL still be able to distinguish managed imports from manually declared pre-existing evidence
 
 #### Scenario: Operator targets a missing topic or notebook binding
 - **WHEN** the operator tries to declare a notebook-source manifest for a topic or notebook binding that does not exist
