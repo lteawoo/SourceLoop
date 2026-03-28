@@ -4,6 +4,7 @@ export const workspaceConfigSchema = z.object({
   version: z.literal(1),
   createdAt: z.string().datetime(),
   paths: z.object({
+    chromeProfiles: z.string().min(1),
     chromeTargets: z.string().min(1),
     topics: z.string().min(1),
     sources: z.string().min(1),

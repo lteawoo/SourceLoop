@@ -4,6 +4,9 @@ import { loadWorkspace } from "../workspace/load-workspace.js";
 import {
   chromeAttachTargetSchema,
   type ChromeAttachTarget,
+  type ChromeAttachOwnership,
+  type ChromeNotebooklmReadiness,
+  type ChromeProfileIsolation,
   type ChromeEndpointAttachTarget,
   type ChromeProfileAttachTarget
 } from "../../schemas/attach.js";
@@ -17,10 +20,15 @@ import { getChromeTargetNote } from "../vault/notes.js";
 type RegisterChromeProfileTargetInput = {
   name: string;
   profileDirPath: string;
+  profileIsolation?: ChromeProfileIsolation;
+  ownership?: Exclude<ChromeAttachOwnership, "external">;
+  notebooklmReadiness?: ChromeNotebooklmReadiness;
+  notebooklmValidatedAt?: string;
   chromeExecutablePath?: string;
   remoteDebuggingPort?: number;
   launchArgs?: string[];
   description?: string;
+  createdAt?: string;
   force?: boolean;
   cwd?: string;
 };
@@ -28,12 +36,15 @@ type RegisterChromeProfileTargetInput = {
 type RegisterChromeEndpointTargetInput = {
   name: string;
   endpoint: string;
+  profileIsolation?: ChromeProfileIsolation;
+  notebooklmReadiness?: ChromeNotebooklmReadiness;
+  notebooklmValidatedAt?: string;
   description?: string;
   force?: boolean;
   cwd?: string;
 };
 
-type RegisterChromeAttachTargetResult = {
+export type RegisterChromeAttachTargetResult = {
   target: ChromeAttachTarget;
   markdownPath: string;
   jsonPath: string;
@@ -49,12 +60,16 @@ export async function registerChromeProfileTarget(
       type: "chrome_attach_target",
       name: input.name,
       description: input.description,
+      profileIsolation: input.profileIsolation ?? "unknown",
+      ownership: input.ownership ?? "user_managed",
+      notebooklmReadiness: input.notebooklmReadiness ?? "unknown",
+      notebooklmValidatedAt: input.notebooklmValidatedAt,
       targetType: "profile",
       profileDirPath: path.resolve(input.profileDirPath),
       chromeExecutablePath: input.chromeExecutablePath ? path.resolve(input.chromeExecutablePath) : undefined,
       remoteDebuggingPort: input.remoteDebuggingPort,
       launchArgs: input.launchArgs ?? [],
-      createdAt: new Date().toISOString()
+      createdAt: input.createdAt ?? new Date().toISOString()
     }),
     input.force ?? false
   );
@@ -70,6 +85,10 @@ export async function registerChromeEndpointTarget(
       type: "chrome_attach_target",
       name: input.name,
       description: input.description,
+      profileIsolation: input.profileIsolation ?? "unknown",
+      ownership: "external",
+      notebooklmReadiness: input.notebooklmReadiness ?? "unknown",
+      notebooklmValidatedAt: input.notebooklmValidatedAt,
       targetType: "remote_debugging_endpoint",
       endpoint: input.endpoint,
       createdAt: new Date().toISOString()
@@ -88,6 +107,13 @@ export async function loadChromeAttachTarget(
   const raw = await readFile(targetPath, "utf8");
   const target = chromeAttachTargetSchema.parse(JSON.parse(raw));
   return { workspace, target, path: targetPath };
+}
+
+export async function upsertChromeAttachTarget(
+  target: ChromeAttachTarget,
+  input?: { cwd?: string; force?: boolean }
+): Promise<RegisterChromeAttachTargetResult> {
+  return persistChromeAttachTarget(input?.cwd, target, input?.force ?? true);
 }
 
 export async function listChromeAttachTargets(cwd?: string): Promise<ChromeAttachTarget[]> {
@@ -181,7 +207,18 @@ function buildChromeAttachMarkdown(target: ChromeAttachTarget): string {
 }
 
 function buildChromeAttachBody(target: ChromeAttachTarget): string {
-  const lines = [`# ${normalizeObsidianText(target.name, target.id)}`, "", `- Target Type: ${target.targetType}`];
+  const lines = [
+    `# ${normalizeObsidianText(target.name, target.id)}`,
+    "",
+    `- Target Type: ${target.targetType}`,
+    `- Profile Isolation: ${target.profileIsolation}`,
+    `- Ownership: ${target.ownership}`,
+    `- NotebookLM Readiness: ${target.notebooklmReadiness}`
+  ];
+
+  if (target.notebooklmValidatedAt) {
+    lines.push(`- NotebookLM Validated At: ${target.notebooklmValidatedAt}`);
+  }
 
   if (target.targetType === "profile") {
     appendProfileBody(lines, target);

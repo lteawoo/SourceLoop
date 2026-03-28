@@ -3,6 +3,7 @@
 import { Command } from "commander";
 import { attachCommand } from "./commands/attach.js";
 import { authCommand } from "./commands/auth.js";
+import { chromeCommand } from "./commands/chrome.js";
 import { composeCommand } from "./commands/compose.js";
 import { doctorCommand } from "./commands/doctor.js";
 import { ingestCommand } from "./commands/ingest.js";
@@ -30,6 +31,7 @@ program.addCommand(doctorCommand);
 program.addCommand(ingestCommand);
 program.addCommand(importLatestCommand);
 program.addCommand(topicCommand);
+program.addCommand(chromeCommand);
 program.addCommand(attachCommand);
 program.addCommand(authCommand);
 program.addCommand(notebookBindCommand);

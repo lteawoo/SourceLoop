@@ -24,7 +24,7 @@ import { executeQARun } from "../src/core/runs/run-qa.js";
 import { createTopic } from "../src/core/topics/manage-topics.js";
 import { initializeWorkspace } from "../src/core/workspace/init-workspace.js";
 import { ingestSource } from "../src/core/ingest/ingest-source.js";
-import { registerChromeEndpointTarget } from "../src/core/attach/manage-targets.js";
+import { registerChromeEndpointTarget, registerChromeProfileTarget } from "../src/core/attach/manage-targets.js";
 import type { ManagedNotebookBrowserImportInput, NotebookBrowserSession, NotebookBrowserSessionFactory } from "../src/core/notebooklm/browser-agent.js";
 
 describe("operator CLI workflow", () => {
@@ -130,6 +130,78 @@ describe("operator CLI workflow", () => {
     expect(text).toContain(incompletePlan.run.id);
   });
 
+  it("recommends launching a managed isolated Chrome target before notebook work when no trusted target exists", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
+    await initializeWorkspace({ directory: workspaceRoot, force: false });
+
+    const topic = await createTopic({
+      cwd: workspaceRoot,
+      name: "Needs browser launch"
+    });
+
+    const statusReport = await buildWorkspaceStatusReport(workspaceRoot);
+    const doctorReport = await buildDoctorReport(workspaceRoot);
+
+    expect(statusReport.nextActions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "launch_isolated_browser",
+          command: "sourceloop chrome launch"
+        })
+      ])
+    );
+    expect(doctorReport.findings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          category: "attach",
+          severity: "warning",
+          message: expect.stringContaining("No SourceLoop-managed isolated Chrome target")
+        })
+      ])
+    );
+  });
+
+  it("recommends attach validation when a managed isolated target exists but is not NotebookLM-validated", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
+    await initializeWorkspace({ directory: workspaceRoot, force: false });
+
+    await createTopic({
+      cwd: workspaceRoot,
+      name: "Needs browser validation"
+    });
+
+    await registerChromeProfileTarget({
+      cwd: workspaceRoot,
+      name: "research-browser",
+      profileDirPath: path.join(workspaceRoot, ".sourceloop", "chrome-profiles", "research-browser"),
+      ownership: "sourceloop_managed",
+      profileIsolation: "isolated",
+      notebooklmReadiness: "unknown",
+      force: true
+    });
+
+    const statusReport = await buildWorkspaceStatusReport(workspaceRoot);
+    const doctorReport = await buildDoctorReport(workspaceRoot);
+
+    expect(statusReport.nextActions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "validate_attach",
+          command: expect.stringContaining("sourceloop attach validate attach-research-browser")
+        })
+      ])
+    );
+    expect(doctorReport.findings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          category: "attach",
+          severity: "warning",
+          message: expect.stringContaining("has not been validated against NotebookLM yet")
+        })
+      ])
+    );
+  });
+
   it("diagnoses missing bindings, missing evidence, and incomplete runs", async () => {
     const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
     await initializeWorkspace({ directory: workspaceRoot, force: false });
@@ -197,6 +269,111 @@ describe("operator CLI workflow", () => {
     );
     expect(text).toContain("Doctor Findings");
     expect(text).toContain("sourceloop run");
+  });
+
+  it("surfaces attach isolation warnings in status and doctor", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
+    await initializeWorkspace({ directory: workspaceRoot, force: false });
+
+    const topic = await createTopic({
+      cwd: workspaceRoot,
+      name: "Attach safety topic"
+    });
+
+    const attachTarget = await registerChromeEndpointTarget({
+      cwd: workspaceRoot,
+      name: "Shared Chrome",
+      endpoint: "http://127.0.0.1:9222",
+      profileIsolation: "shared"
+    });
+    const binding = await bindNotebook({
+      cwd: workspaceRoot,
+      name: "Shared Attach Notebook",
+      topic: topic.topic.name,
+      topicId: topic.topic.id,
+      notebookUrl: "https://notebooklm.google.com/notebook/shared-attach",
+      accessMode: "owner",
+      attachTargetId: attachTarget.target.id
+    });
+    await declareNotebookSourceManifest({
+      cwd: workspaceRoot,
+      topicId: topic.topic.id,
+      notebookBindingId: binding.binding.id,
+      kind: "document-set",
+      title: "Shared attach evidence"
+    });
+
+    const statusReport = await buildWorkspaceStatusReport(workspaceRoot);
+    const doctorReport = await buildDoctorReport(workspaceRoot);
+    const statusText = formatWorkspaceStatusReport(statusReport);
+
+    expect(statusReport.summary.attachIsolation).toEqual({
+      isolated: 0,
+      unknown: 0,
+      shared: 1
+    });
+    expect(statusReport.summary.trustedIsolatedAttachTargetCount).toBe(0);
+    expect(statusReport.nextActions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "launch_isolated_browser",
+          topicId: topic.topic.id,
+          notebookBindingId: binding.binding.id
+        })
+      ])
+    );
+    expect(doctorReport.findings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          category: "attach",
+          topicId: topic.topic.id,
+          notebookBindingId: binding.binding.id,
+          severity: "warning"
+        })
+      ])
+    );
+    expect(statusText).toContain("Attach Targets: 1 (0 trusted isolated, 0 isolated, 0 unknown, 1 shared)");
+  });
+
+  it("prefers notebook binding over browser launch once a trusted isolated target exists", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
+    await initializeWorkspace({ directory: workspaceRoot, force: false });
+
+    const topic = await createTopic({
+      cwd: workspaceRoot,
+      name: "Trusted browser topic"
+    });
+
+    await registerChromeProfileTarget({
+      cwd: workspaceRoot,
+      name: "research-browser",
+      profileDirPath: path.join(workspaceRoot, ".sourceloop", "chrome-profiles", "research-browser"),
+      ownership: "sourceloop_managed",
+      profileIsolation: "isolated",
+      notebooklmReadiness: "validated",
+      notebooklmValidatedAt: new Date().toISOString(),
+      force: true
+    });
+
+    const statusReport = await buildWorkspaceStatusReport(workspaceRoot);
+
+    expect(statusReport.summary.trustedIsolatedAttachTargetCount).toBe(1);
+    expect(statusReport.nextActions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "bind_notebook",
+          topicId: topic.topic.id
+        })
+      ])
+    );
+    expect(statusReport.nextActions).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "launch_isolated_browser",
+          command: "sourceloop chrome launch"
+        })
+      ])
+    );
   });
 
   it("treats evidence readiness as binding-specific for status and doctor", async () => {
@@ -418,7 +595,8 @@ describe("operator CLI workflow", () => {
     const attachTarget = await registerChromeEndpointTarget({
       cwd: workspaceRoot,
       name: "Managed Operator Chrome",
-      endpoint: "http://127.0.0.1:9222"
+      endpoint: "http://127.0.0.1:9222",
+      profileIsolation: "isolated"
     });
 
     const sessionFactory = createManagedOperatorSessionFactory({
@@ -440,7 +618,7 @@ describe("operator CLI workflow", () => {
     expect(statusReport.nextActions).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          kind: "import_managed_source",
+          kind: "launch_isolated_browser",
           notebookBindingId: managedNotebook.binding.id
         })
       ])
@@ -469,8 +647,8 @@ describe("operator CLI workflow", () => {
     expect(statusReport.nextActions).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          kind: "plan_questions",
-          topicId: topic.topic.id
+          kind: "launch_isolated_browser",
+          notebookBindingId: managedNotebook.binding.id
         })
       ])
     );

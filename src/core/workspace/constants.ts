@@ -2,6 +2,7 @@ export const SOURCELOOP_CONFIG_DIR = ".sourceloop";
 export const SOURCELOOP_CONFIG_PATH = `${SOURCELOOP_CONFIG_DIR}/config.json`;
 
 export const WORKSPACE_DIRECTORIES = [
+  ".sourceloop/chrome-profiles",
   "vault/chrome-targets",
   "vault/topics",
   "vault/sources",

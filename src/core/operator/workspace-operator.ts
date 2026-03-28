@@ -4,6 +4,7 @@ import { listChromeAttachTargets } from "../attach/manage-targets.js";
 import { loadWorkspace, type LoadedWorkspace } from "../workspace/load-workspace.js";
 import { getRunPaths, getVaultPaths } from "../vault/paths.js";
 import { notebookBindingSchema, type NotebookBinding } from "../../schemas/notebook.js";
+import type { ChromeAttachTarget } from "../../schemas/attach.js";
 import { managedNotebookImportSchema, managedNotebookSetupSchema, type ManagedNotebookImport, type ManagedNotebookSetup } from "../../schemas/managed-notebook.js";
 import { notebookSourceManifestSchema, type NotebookSourceManifest } from "../../schemas/notebook-source.js";
 import { runIndexSchema, questionBatchSchema, type QARunIndex, type QuestionBatch } from "../../schemas/run.js";
@@ -12,7 +13,17 @@ import { type ResearchTopic, type TopicStatus } from "../../schemas/topic.js";
 import { listTopics } from "../topics/manage-topics.js";
 
 export type OperatorNextAction = {
-  kind: "create_topic" | "bind_notebook" | "declare_evidence" | "import_managed_source" | "plan_questions" | "resume_run" | "run_planned";
+  kind:
+    | "create_topic"
+    | "launch_isolated_browser"
+    | "validate_attach"
+    | "bind_notebook"
+    | "declare_evidence"
+    | "import_managed_source"
+    | "plan_questions"
+    | "resume_run"
+    | "run_planned"
+    | "review_attach_safety";
   message: string;
   command: string;
   topicId?: string;
@@ -56,6 +67,12 @@ export type WorkspaceStatusReport = {
     managedNotebookCount: number;
     managedImportCount: number;
     attachTargetCount: number;
+    trustedIsolatedAttachTargetCount: number;
+    attachIsolation: {
+      isolated: number;
+      unknown: number;
+      shared: number;
+    };
     runCount: number;
     plannedRunCount: number;
     incompleteRunCount: number;
@@ -117,6 +134,8 @@ export async function buildWorkspaceStatusReport(cwd?: string): Promise<Workspac
   const topicSummaries = buildTopicSummaries(artifacts);
   const runSummaries = buildRunSummaries(artifacts);
   const bindingEvidence = buildBindingEvidenceSummaries(artifacts);
+  const attachTargetsById = new Map(artifacts.attachTargets.map((target) => [target.id, target] as const));
+  const trustedIsolatedAttachTargetCount = Array.from(attachTargetsById.values()).filter(isTrustedManagedNotebooklmReadyAttachTarget).length;
   const nextActions = recommendNextActions(artifacts, topicSummaries, runSummaries, bindingEvidence);
 
   return {
@@ -134,6 +153,12 @@ export async function buildWorkspaceStatusReport(cwd?: string): Promise<Workspac
         artifacts.notebookBindings.some((binding) => binding.id === managedImport.notebookBindingId)
       ).length,
       attachTargetCount: artifacts.attachTargets.length,
+      trustedIsolatedAttachTargetCount,
+      attachIsolation: {
+        isolated: countAttachTargetsByIsolation(attachTargetsById, "isolated"),
+        unknown: countAttachTargetsByIsolation(attachTargetsById, "unknown"),
+        shared: countAttachTargetsByIsolation(attachTargetsById, "shared")
+      },
       runCount: artifacts.runs.length,
       plannedRunCount: runSummaries.filter((run) => run.status === "planned").length,
       incompleteRunCount: runSummaries.filter((run) => run.status === "incomplete").length,
@@ -161,6 +186,27 @@ export async function buildDoctorReport(cwd?: string): Promise<DoctorReport> {
 
   const bindingIds = new Set(artifacts.notebookBindings.map((binding) => binding.id));
   const attachTargetIds = new Set(artifacts.attachTargets.map((target) => target.id));
+  const attachTargetsById = new Map(artifacts.attachTargets.map((target) => [target.id, target] as const));
+  const trustedIsolatedAttachTargets = artifacts.attachTargets.filter(isTrustedManagedNotebooklmReadyAttachTarget);
+  const managedIsolatedUnvalidatedTargets = artifacts.attachTargets.filter(isManagedIsolatedAttachTarget).filter((target) => target.notebooklmReadiness !== "validated");
+
+  if (artifacts.topics.length > 0 && trustedIsolatedAttachTargets.length === 0 && managedIsolatedUnvalidatedTargets.length === 0) {
+    findings.push({
+      severity: "warning",
+      category: "attach",
+      message: "No SourceLoop-managed isolated Chrome target is available for NotebookLM automation.",
+      suggestedCommand: 'sourceloop chrome launch'
+    });
+  }
+
+  for (const target of managedIsolatedUnvalidatedTargets) {
+    findings.push({
+      severity: "warning",
+      category: "attach",
+      message: `Managed isolated Chrome target ${target.id} has not been validated against NotebookLM yet.`,
+      suggestedCommand: `sourceloop attach validate ${target.id} --notebook-url "https://notebooklm.google.com/notebook/..."`
+    });
+  }
 
   for (const topic of artifacts.topics) {
     const topicBindings = artifacts.notebookBindings.filter((binding) => binding.topicId === topic.id);
@@ -229,6 +275,27 @@ export async function buildDoctorReport(cwd?: string): Promise<DoctorReport> {
         message: `Notebook binding ${binding.id} references missing attach target ${binding.attachTargetId}.`,
         suggestedCommand: `sourceloop attach endpoint --name ${binding.attachTargetId.replace(/^attach-/, "")} --endpoint http://127.0.0.1:9222`
       });
+    }
+
+    if (binding.attachTargetId) {
+      const attachTarget = attachTargetsById.get(binding.attachTargetId);
+      if (attachTarget && !isTrustedManagedNotebooklmReadyAttachTarget(attachTarget)) {
+        findings.push({
+          severity: "warning",
+          category: "attach",
+          notebookBindingId: binding.id,
+          ...(binding.topicId ? { topicId: binding.topicId } : {}),
+          message:
+            attachTarget.profileIsolation === "shared"
+              ? `Notebook binding ${binding.id} uses shared Chrome attach target ${attachTarget.id}. SourceLoop recommends launching a managed isolated research browser instead.`
+              : attachTarget.profileIsolation === "unknown"
+                ? `Notebook binding ${binding.id} uses Chrome attach target ${attachTarget.id} with unknown profile isolation. SourceLoop recommends launching a managed isolated research browser instead.`
+                : attachTarget.ownership !== "sourceloop_managed"
+                  ? `Notebook binding ${binding.id} uses manually registered isolated Chrome attach target ${attachTarget.id}. SourceLoop still recommends a managed isolated research browser as the preferred setup.`
+                  : `Notebook binding ${binding.id} uses managed isolated Chrome attach target ${attachTarget.id}, but it has not been validated against NotebookLM yet.`,
+          suggestedCommand: buildAttachSafetyCommand(attachTarget)
+        });
+      }
     }
   }
 
@@ -339,6 +406,7 @@ export function formatWorkspaceStatusReport(report: WorkspaceStatusReport): stri
     `- Topics: ${report.summary.topicCount}`,
     `- Notebook Bindings: ${report.summary.notebookBindingCount}`,
     `- Evidence: ${report.summary.localSourceCount + report.summary.notebookEvidenceCount + report.summary.managedImportCount}`,
+    `- Attach Targets: ${report.summary.attachTargetCount} (${report.summary.trustedIsolatedAttachTargetCount} trusted isolated, ${report.summary.attachIsolation.isolated} isolated, ${report.summary.attachIsolation.unknown} unknown, ${report.summary.attachIsolation.shared} shared)`,
     `- Runs: ${report.summary.runCount} (${report.summary.incompleteRunCount} incomplete, ${report.summary.completedRunCount} completed)`,
     "",
     "Topics",
@@ -518,6 +586,11 @@ function recommendNextActions(
   bindingEvidence: Map<string, BindingEvidenceSummary>
 ): OperatorNextAction[] {
   const actions: OperatorNextAction[] = [];
+  const attachTargetsById = new Map(artifacts.attachTargets.map((target) => [target.id, target] as const));
+  const hasTrustedIsolatedTarget = artifacts.attachTargets.some(isTrustedManagedNotebooklmReadyAttachTarget);
+  const managedUnvalidatedTarget = artifacts.attachTargets.find(
+    (target) => isManagedIsolatedAttachTarget(target) && target.notebooklmReadiness !== "validated"
+  );
 
   if (artifacts.topics.length === 0) {
     return [
@@ -527,6 +600,22 @@ function recommendNextActions(
         command: 'sourceloop topic create --name "Your topic"'
       }
     ];
+  }
+
+  if (!hasTrustedIsolatedTarget && !managedUnvalidatedTarget) {
+    actions.push({
+      kind: "launch_isolated_browser",
+      message: "Launch a managed isolated Chrome target before more NotebookLM work.",
+      command: "sourceloop chrome launch"
+    });
+  }
+
+  if (!hasTrustedIsolatedTarget && managedUnvalidatedTarget) {
+    actions.push({
+      kind: "validate_attach",
+      message: `Validate managed Chrome target ${managedUnvalidatedTarget.id} against NotebookLM before more work.`,
+      command: `sourceloop attach validate ${managedUnvalidatedTarget.id} --notebook-url "https://notebooklm.google.com/notebook/..."`
+    });
   }
 
   for (const run of runs.filter((candidate) => candidate.status === "incomplete")) {
@@ -549,6 +638,35 @@ function recommendNextActions(
         command: `sourceloop notebook-bind --name "${topic.name}" --topic-id ${topic.id} --url "https://notebooklm.google.com/notebook/..."`
       });
       continue;
+    }
+
+    const riskyBinding = artifacts.notebookBindings.find((candidate) => {
+      if (candidate.topicId !== topic.id || !candidate.attachTargetId) {
+        return false;
+      }
+      const attachTarget = attachTargetsById.get(candidate.attachTargetId);
+      return Boolean(attachTarget && !isTrustedManagedNotebooklmReadyAttachTarget(attachTarget));
+    });
+
+    if (riskyBinding?.attachTargetId) {
+      const attachTarget = attachTargetsById.get(riskyBinding.attachTargetId);
+      if (attachTarget) {
+        actions.push({
+          kind: "launch_isolated_browser",
+          topicId: topic.id,
+          notebookBindingId: riskyBinding.id,
+          message:
+            attachTarget.profileIsolation === "shared"
+              ? `Replace shared Chrome attach target ${attachTarget.id} before continuing NotebookLM work for topic ${topic.id}.`
+              : attachTarget.profileIsolation === "unknown"
+                ? `Launch a managed isolated Chrome target instead of ${attachTarget.id} before continuing NotebookLM work for topic ${topic.id}.`
+                : attachTarget.ownership !== "sourceloop_managed"
+                  ? `Replace manual isolated Chrome attach target ${attachTarget.id} with a SourceLoop-managed isolated target before continuing NotebookLM work for topic ${topic.id}.`
+                  : `Validate managed isolated Chrome attach target ${attachTarget.id} against NotebookLM before continuing work for topic ${topic.id}.`,
+          command: buildAttachSafetyCommand(attachTarget)
+        });
+        continue;
+      }
     }
 
     const missingEvidenceBinding = artifacts.notebookBindings.find(
@@ -615,6 +733,13 @@ function dedupeActions(actions: OperatorNextAction[]): OperatorNextAction[] {
   });
 }
 
+function countAttachTargetsByIsolation(
+  attachTargetsById: Map<string, ChromeAttachTarget>,
+  profileIsolation: ChromeAttachTarget["profileIsolation"]
+): number {
+  return Array.from(attachTargetsById.values()).filter((target) => target.profileIsolation === profileIsolation).length;
+}
+
 function deriveTopicStatus(input: {
   localSourceCount: number;
   notebookEvidenceCount: number;
@@ -652,6 +777,21 @@ function hasUsableAttachTarget(
     return false;
   }
   return attachTargetIds.has(binding.attachTargetId);
+}
+
+function buildAttachSafetyCommand(target: ChromeAttachTarget): string {
+  if (isManagedIsolatedAttachTarget(target) && target.notebooklmReadiness !== "validated") {
+    return `sourceloop attach validate ${target.id} --notebook-url "https://notebooklm.google.com/notebook/..."`;
+  }
+  return `sourceloop chrome launch --name "${target.name}" --force`;
+}
+
+function isManagedIsolatedAttachTarget(target: ChromeAttachTarget): boolean {
+  return target.profileIsolation === "isolated" && target.ownership === "sourceloop_managed";
+}
+
+function isTrustedManagedNotebooklmReadyAttachTarget(target: ChromeAttachTarget): boolean {
+  return isManagedIsolatedAttachTarget(target) && target.notebooklmReadiness === "validated";
 }
 
 async function readJsonDirectory<T>(

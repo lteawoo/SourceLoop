@@ -25,6 +25,7 @@ function withWorkspaceDefaults(config: Partial<WorkspaceConfig>): WorkspaceConfi
     version: 1,
     createdAt: config.createdAt ?? new Date(0).toISOString(),
     paths: {
+      chromeProfiles: config.paths?.chromeProfiles ?? ".sourceloop/chrome-profiles",
       chromeTargets: config.paths?.chromeTargets ?? "vault/chrome-targets",
       topics: config.paths?.topics ?? "vault/topics",
       sources: config.paths?.sources ?? "vault/sources",
