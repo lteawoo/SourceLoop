@@ -67,6 +67,8 @@ describe("initializeWorkspace", () => {
     expect(skillMarkdown).toContain("topic only");
     expect(skillMarkdown).toContain("no topic provided");
     expect(skillMarkdown).toContain("ask which topic to research");
+    expect(skillMarkdown).toContain("default planned question count is 10");
+    expect(skillMarkdown).toContain("prefer running the full batch");
     expect(skillMarkdown).toContain("Do not autonomously search the web or choose source materials");
     expect(skillMarkdown).toContain("Do not silently fall back to another Chrome session");
     expect(skillMarkdown).toContain("Ask the user before continuing with a non-SourceLoop browser");
@@ -76,6 +78,8 @@ describe("initializeWorkspace", () => {
     expect(playbookReference).toContain("existing NotebookLM URL");
     expect(playbookReference).toContain("SourceLoop-managed isolated profile");
     expect(playbookReference).toContain("If the user did not provide a topic, ask for the topic first");
+    expect(playbookReference).toContain("planning defaults to 10 questions");
+    expect(playbookReference).toContain("run the full remaining batch");
     expect(playbookReference).toContain("do not silently continue on that path");
     expect(playbookReference).toContain("visible setup step");
     expect(playbookReference).toContain("let that command complete before asking whether to continue");

@@ -15,6 +15,7 @@ import {
   formatDoctorReport,
   formatWorkspaceStatusReport
 } from "../src/core/operator/workspace-operator.js";
+import { DEFAULT_MAX_QUESTIONS } from "../src/core/runs/question-planner.js";
 import { bindNotebook } from "../src/core/notebooks/bind-notebook.js";
 import { declareNotebookSourceManifest } from "../src/core/notebooks/manage-notebook-source-manifests.js";
 import { createManagedNotebook, importIntoManagedNotebook } from "../src/core/notebooks/manage-managed-notebooks.js";
@@ -726,6 +727,60 @@ describe("operator CLI workflow", () => {
       await captureStdout(() => doctorCommand.parseAsync(["--json"], { from: "user" }))
     ) as { findings: unknown[] };
     expect(Array.isArray(doctorJson.findings)).toBe(true);
+  });
+
+  it("defaults plan question count to 10 when max-questions is omitted", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
+    await initializeWorkspace({ directory: workspaceRoot, force: false });
+    process.chdir(workspaceRoot);
+
+    await captureStdout(() =>
+      topicCommand.parseAsync(["create", "--name", "Default Count Topic", "--json"], { from: "user" })
+    );
+
+    const notebookBindJson = JSON.parse(
+      await captureStdout(() =>
+        notebookBindCommand.parseAsync(
+          [
+            "--name",
+            "Default Count Notebook",
+            "--topic-id",
+            "topic-default-count-topic",
+            "--url",
+            "https://notebooklm.google.com/notebook/default-count",
+            "--json"
+          ],
+          { from: "user" }
+        )
+      )
+    ) as { binding: { id: string } };
+
+    await captureStdout(() =>
+      notebookSourceCommand.parseAsync(
+        [
+          "declare",
+          "--topic-id",
+          "topic-default-count-topic",
+          "--notebook",
+          notebookBindJson.binding.id,
+          "--kind",
+          "document-set",
+          "--title",
+          "Default Count Source Set",
+          "--json"
+        ],
+        { from: "user" }
+      )
+    );
+
+    const planJson = JSON.parse(
+      await captureStdout(() =>
+        planCommand.parseAsync(["topic-default-count-topic", "--json"], { from: "user" })
+      )
+    ) as { batch: { questions: Array<{ id: string }>; planningScope?: { maxQuestions?: number } } };
+
+    expect(planJson.batch.questions).toHaveLength(DEFAULT_MAX_QUESTIONS);
+    expect(planJson.batch.planningScope?.maxQuestions).toBe(DEFAULT_MAX_QUESTIONS);
   });
 
   it("surfaces managed notebook setup readiness in status and doctor", async () => {

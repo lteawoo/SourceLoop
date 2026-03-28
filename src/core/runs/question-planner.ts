@@ -45,6 +45,8 @@ export type CreateQuestionPlanResult = {
   questionsMarkdownPath: string;
 };
 
+export const DEFAULT_MAX_QUESTIONS = 10;
+
 export async function createQuestionPlan(
   input: CreateQuestionPlanInput
 ): Promise<CreateQuestionPlanResult> {
@@ -258,12 +260,10 @@ export function buildPlannedQuestions(
 
 function normalizePlanningScope(maxQuestions?: number, families?: string[]): PlanningScope | undefined {
   const selectedFamilies = families?.map((family) => questionKindSchema.parse(family));
-  if (maxQuestions === undefined && (!selectedFamilies || selectedFamilies.length === 0)) {
-    return undefined;
-  }
+  const normalizedMaxQuestions = maxQuestions ?? DEFAULT_MAX_QUESTIONS;
 
   const scope = {
-    ...(maxQuestions !== undefined ? { maxQuestions } : {}),
+    maxQuestions: normalizedMaxQuestions,
     ...(selectedFamilies && selectedFamilies.length > 0 ? { selectedFamilies } : {})
   };
   return scope;
@@ -342,7 +342,7 @@ function describePlanningScope(batch: QuestionBatch): string {
     parts.push(`families: ${batch.planningScope.selectedFamilies.join(", ")}`);
   }
 
-  return parts.length > 0 ? parts.join(" | ") : "default planner scope";
+  return parts.length > 0 ? parts.join(" | ") : `default planner scope (${DEFAULT_MAX_QUESTIONS} questions)`;
 }
 
 async function resolveNotebookBindingIdForTopic(rootDir: string, topicId: string): Promise<string> {

@@ -145,17 +145,12 @@ Optional check:
 sourceloop attach show attach-test-chrome
 ```
 
-### 5. Validate the NotebookLM target
-
-Important: use a real notebook URL, not the NotebookLM home page.
+### 5. Validate NotebookLM home access
 
 Run:
 
 ```bash
-sourceloop attach validate \
-  attach-test-chrome \
-  --notebook-url "https://notebooklm.google.com/notebook/<real-notebook-id>" \
-  --show-browser
+sourceloop attach validate attach-test-chrome
 ```
 
 Check:
@@ -163,6 +158,14 @@ Check:
 - validation completes
 - shell prompt returns
 - attached Chrome stays open
+
+Optional notebook-specific validation:
+
+```bash
+sourceloop attach validate \
+  attach-test-chrome \
+  --notebook-url "https://notebooklm.google.com/notebook/<real-notebook-id>"
+```
 
 ### 6. Create a managed notebook
 
@@ -187,11 +190,11 @@ Run at least one local-source import and one remote URL import:
 
 ```bash
 sourceloop notebook-import \
-  --notebook notebook-claude-code-web-design \
+  --notebook <managed-notebook-binding-id> \
   --source-id <source-id>
 
 sourceloop notebook-import \
-  --notebook notebook-claude-code-web-design \
+  --notebook <managed-notebook-binding-id> \
   --url "https://youtube.com/watch?v=<real-video-id>"
 ```
 
@@ -237,13 +240,12 @@ sourceloop plan \
 
 Capture the printed `run-id`.
 
-Optional focused planning:
+Optional smaller planning scope:
 
 ```bash
 sourceloop plan \
   topic-professional-web-design-with-claude-code \
-  --max-questions 3 \
-  --families core,execution
+  --max-questions 5
 ```
 
 ### 12. Run NotebookLM end to end
@@ -251,14 +253,14 @@ sourceloop plan \
 Run:
 
 ```bash
-sourceloop run <run-id> --show-browser
+sourceloop run <run-id>
 ```
 
 Check:
 
 - NotebookLM receives the questions
 - the shell prompt returns after completion
-- attached Chrome stays open
+- the managed Chrome session remains usable afterward
 - exchange notes are created under `vault/runs/<run-id>/exchanges/`
 
 Optional partial execution:
@@ -266,8 +268,7 @@ Optional partial execution:
 ```bash
 sourceloop run <run-id> \
   --from-question <question-id> \
-  --limit 2 \
-  --show-browser
+  --limit 2
 ```
 
 Or target explicit planned questions:
@@ -275,8 +276,7 @@ Or target explicit planned questions:
 ```bash
 sourceloop run <run-id> \
   --question-id <question-id-1> \
-  --question-id <question-id-2> \
-  --show-browser
+  --question-id <question-id-2>
 ```
 
 ### 13. Import the latest existing NotebookLM answer without asking a new question
@@ -286,15 +286,14 @@ Use this when a reply already exists in NotebookLM and you want to backfill the 
 Run:
 
 ```bash
-sourceloop import-latest <run-id> --show-browser
+sourceloop import-latest <run-id>
 ```
 
 Optional explicit question mapping:
 
 ```bash
 sourceloop import-latest <run-id> \
-  --question-id <question-id> \
-  --show-browser
+  --question-id <question-id>
 ```
 
 ### 14. Check operator-facing structured output
@@ -404,13 +403,13 @@ Run:
 
 ```bash
 sourceloop attach endpoint --name work-chrome --endpoint http://127.0.0.1:9222
-sourceloop attach validate attach-work-chrome --notebook-url <notebook-url> --show-browser
+sourceloop attach validate attach-work-chrome
 ```
 
 Check:
 
 - Chrome is reachable
-- NotebookLM notebook opens
+- NotebookLM home opens
 - validation command returns to shell
 - attached Chrome window remains open after validation
 
@@ -451,7 +450,7 @@ Check:
 Run:
 
 ```bash
-sourceloop run <run-id> --show-browser
+sourceloop run <run-id>
 ```
 
 Check:
@@ -497,8 +496,8 @@ Check:
 
 Capture evidence for:
 
-- successful `attach validate --show-browser`
-- successful `run --show-browser`
+- successful `attach validate`
+- successful `run`
 - Obsidian view of topic, questions, and exchange notes
 
 Recommended evidence:

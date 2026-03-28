@@ -81,9 +81,9 @@ Use this skill when the current project is a SourceLoop workspace.
    - existing NotebookLM URL
 6. Prepare notebook before evidence import or declaration
 7. Require usable evidence before planning
-8. Prefer bounded execution:
-   - \`plan --max-questions 3\` or \`5\`
-   - \`run --limit 1\` or \`2\`
+8. Execution defaults:
+   - planning defaults to 10 questions unless the user asked for a different count
+   - once a 10-question batch is planned, prefer running the full batch unless the user explicitly asked for a smaller partial pass
 9. Re-check \`status --json\` after each meaningful step
 10. If a NotebookLM step may take a while, say so briefly before waiting
 11. If a run command already has a chosen \`--limit\`, let that command finish its full requested scope before asking what to do next
@@ -103,14 +103,17 @@ Use this skill when the current project is a SourceLoop workspace.
 
 - Topic only:
   - create the topic if needed
+  - confirm the planned question count at kickoff (default: 10)
   - prepare attached Chrome
   - create a managed notebook
   - ask the user which sources to import before planning
 - No topic provided:
   - ask the user which topic to research
+  - mention that the default planned question count is 10 and they can change it now
   - do not create notebooks, import sources, or plan questions yet
 - Topic plus sources:
   - create the topic if needed
+  - confirm the planned question count at kickoff (default: 10)
   - prepare attached Chrome
   - create a managed notebook
   - import the provided files or URLs
@@ -126,6 +129,7 @@ Use this skill when the current project is a SourceLoop workspace.
 
 - No topic: \`sourceloop topic create ...\`
 - User asked to start research without a topic: ask which topic to research before doing anything else
+- When asking for the topic, also mention that the default planned question count is 10 and the user can override it
 - No trusted isolated Chrome target: \`sourceloop chrome launch\`
 - Treat \`sourceloop chrome launch\` as the visible setup step for login and first NotebookLM checks
 - Managed isolated Chrome target exists but is not validated yet: \`sourceloop attach validate <target>\`
@@ -135,8 +139,8 @@ Use this skill when the current project is a SourceLoop workspace.
 - Local source files: \`sourceloop ingest ...\` then \`sourceloop notebook-import --source-id ...\` (also for the first source on an empty managed notebook)
 - Remote URLs: \`sourceloop notebook-import --url ...\` (also for the first source on an empty managed notebook)
 - For SourceLoop-managed notebooks, treat the requested notebook title as a label only and read the returned binding id from JSON or \`status --json\`
-- Ready topic with no run: \`sourceloop plan ... --max-questions 3 --families core,execution --json\`
-- Planned or incomplete run: \`sourceloop run ... --limit 1 --json\`
+- Ready topic with no run: \`sourceloop plan ... --max-questions 10 --json\`
+- Planned or incomplete run: \`sourceloop run ... --json\`
 - Existing latest answer only: \`sourceloop import-latest ...\`
 - Treat \`--limit\` as the execution scope for one run command. Do not stop halfway through that requested limit just to ask again.
 
@@ -151,7 +155,7 @@ Use this skill when the current project is a SourceLoop workspace.
 - Do not run \`plan\` without usable evidence
 - Do not run \`run\` without a notebook binding and planned run
 - Do not use \`--question-id\` and \`--from-question\` together
-- Do not default to large run batches
+- Do not impose a partial run limit by default when the planned batch should be executed end to end
 - Do not turn bounded execution into per-question interruptions unless the user explicitly asked for checkpoint-style approval
 
 For the full operator flow, read [references/playbook.md](references/playbook.md).
@@ -172,8 +176,8 @@ function buildCodexPlaybookReference(): string {
 7. \`notebook-create\` or \`notebook-bind\`
 8. \`ingest\`, \`notebook-import\`, or \`notebook-source declare\`
 9. \`status --json\` and \`doctor --json\` again
-10. \`plan --max-questions 3|5 --families core,execution --json\`
-11. \`run --limit 1|2 --json\`
+10. \`plan --max-questions 10 --json\`
+11. \`run --json\`
 
 ## Start conditions
 
@@ -201,14 +205,15 @@ The operator should classify the user's first request into one of these:
 - Prefer \`sourceloop chrome launch\` so NotebookLM research uses a SourceLoop-managed isolated profile instead of a shared default browser profile.
 - Use \`chrome launch\` as the visible setup step, then keep later notebook actions hidden unless you need \`--show-browser\` for debugging.
 - Prefer URL-less \`sourceloop attach validate <target>\` before notebook creation when only NotebookLM home readiness is needed.
-- If the user did not provide a topic, ask for the topic first and stop there.
+- If the user did not provide a topic, ask for the topic first and mention that planning defaults to 10 questions unless they want another count.
 - If no trusted isolated Chrome target exists, launch browser state before notebook actions.
 - If only another Chrome is available, ask the user whether to keep going with that Chrome before using it.
-- If the user provided only a topic, create a managed notebook and ask which sources to import.
+- If the user provided only a topic, confirm the question count (default: 10), create a managed notebook, and ask which sources to import.
 - If the user did not provide sources, do not search for or choose source materials unless the user explicitly asked you to find sources.
 - If the user provided topic plus sources, create a managed notebook and import those sources.
 - If the user provided a NotebookLM URL, bind the existing notebook and continue from its source state.
-- If a run already exists, resume with bounded execution instead of creating large new passes.
+- If a run already exists, resume it before creating a new pass.
+- If the user planned 10 questions and did not ask for a partial pass, run the full remaining batch instead of adding a default \`--limit\`.
 - If you already chose a bounded run command such as \`run --limit 1\`, let that command complete before asking whether to continue with another run.
 - Tell the user that NotebookLM actions can take a bit before you wait on them, and if the wait becomes long, ask whether to keep waiting or just report the current state.
 `;

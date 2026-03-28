@@ -43,15 +43,16 @@ The agent should avoid guessing hidden state when the CLI can report it directly
   - topic plus sources
   - existing NotebookLM URL
 - If the user did not provide a topic, ask which topic to research before doing anything else
+- When asking for the topic, mention that planning defaults to 10 questions unless the user wants another count
 - If the user provided a topic but no sources, ask which sources to use before collecting or importing anything
+- When the topic is first set, confirm whether to keep the default 10-question plan or use another count
 - Do not autonomously search the web or choose source materials unless the user explicitly asked the agent to find sources
 - Do not run `plan` unless the topic has usable evidence
 - Do not run `run` unless the topic has a bound notebook and a planned run
 - Prefer `notebook-create` + `notebook-import` when the notebook does not already exist
 - Prefer `notebook-bind` + `notebook-source declare` when the notebook and source set already exist in NotebookLM
-- Prefer small batches first:
-  - `plan --max-questions 3` or `5`
-  - `run --limit 1` or `2`
+- Planning defaults to `10` questions unless the user wants another count
+- If the user planned 10 questions and did not ask for a partial run, execute the full batch instead of adding a default run limit
 - Treat the chosen `--limit` as the full scope of that one run command
 - Do not interrupt a running `run --limit N` halfway through just to ask again unless the user explicitly asked for checkpoint-style approval
 - Before waiting on NotebookLM, briefly tell the user that the action can take a bit
@@ -76,6 +77,7 @@ Use this when the user says "start research" or equivalent but does not provide 
 ### Flow
 
 - ask which topic to research
+- mention that the default planned question count is 10 and the user can change it now
 - stop there until the user answers
 - do not create notebooks, import sources, or search for starter materials yet
 
@@ -141,8 +143,8 @@ sourceloop notebook-source declare \
   --ref "https://youtube.com/playlist?list=<real-playlist-id>" \
   --json
 
-sourceloop plan topic-ai-agents-market --max-questions 5 --families core,execution --json
-sourceloop run <run-id> --limit 2 --json
+sourceloop plan topic-ai-agents-market --max-questions 10 --json
+sourceloop run <run-id> --json
 ```
 
 ### When to use
@@ -188,8 +190,8 @@ sourceloop notebook-import \
   --json
 
 sourceloop doctor --json
-sourceloop plan topic-ai-agents-market --max-questions 5 --families core,execution --json
-sourceloop run <run-id> --limit 2 --json
+sourceloop plan topic-ai-agents-market --max-questions 10 --json
+sourceloop run <run-id> --json
 ```
 
 ### When to use
@@ -200,25 +202,23 @@ sourceloop run <run-id> --limit 2 --json
 
 ## Scenario 4: Controlled Research Passes
 
-Use bounded planning and execution by default.
+Use full-batch execution by default once the plan is created, unless the user explicitly wants a smaller partial run.
 
 ### Recommended defaults
 
 - first plan:
-  - `--max-questions 3`
-  - `--families core,execution`
+  - default: `10`
+  - override only when the user wants a different count
 - first run:
-  - `--limit 1` or `2`
-
-This is a default for the first pass, not a rule to stop after every single answer.
-If the agent already chose `run --limit 1`, it should let that one-question run finish and then report the result.
+  - `sourceloop run <run-id> --json`
+  - use `--limit` only when the user explicitly wants a partial pass
 
 ### Useful commands
 
 ```bash
-sourceloop plan <topic-id> --max-questions 3 --families core,execution --json
-sourceloop run <run-id> --limit 1 --json
-sourceloop run <run-id> --from-question <question-id> --limit 2 --json
+sourceloop plan <topic-id> --max-questions 10 --json
+sourceloop run <run-id> --json
+sourceloop run <run-id> --from-question <question-id> --json
 sourceloop run <run-id> --question-id <question-id> --json
 ```
 
@@ -257,9 +257,9 @@ This is useful for manual correction or backfilling the latest visible answer.
 - topic is ready and no plan exists
   - create a plan
 - plan exists and no completed exchanges
-  - run a small batch
+  - run the planned batch
 - run is incomplete
-  - resume with `--from-question` or `--limit`
+  - resume the remaining batch
 
 ## Recommended User-Facing Narration
 
@@ -268,7 +268,7 @@ The agent should keep updates short and operational:
 - "The topic exists, but there is no notebook binding yet. I will create a managed notebook."
 - "The notebook is bound, but there is still no usable evidence. I will import the provided sources first."
 - "The topic is ready for planning. I will generate a 5-question core and execution batch."
-- "I will run only 2 questions first so we can check answer quality before expanding."
+- "I will run the planned batch and collect the answers."
 - "NotebookLM can take a little while here. I will wait briefly for the result."
 - "This run is still in progress. Do you want me to keep waiting, or should I report the current state first?"
 

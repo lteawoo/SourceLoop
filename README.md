@@ -1,107 +1,309 @@
 # SourceLoop
 
-SourceLoop is a local-first research runner that connects a topic, a NotebookLM notebook, and an attached Chrome session into a reusable Markdown archive.
+**A local-first research runtime for Codex, Claude Code, and Gemini CLI.**
 
-It is designed for the workflow:
+SourceLoop helps AI tools work through NotebookLM with a managed browser, repeatable question planning, and local Markdown archives.
 
-1. A human chooses a topic
-2. SourceLoop creates or binds a NotebookLM notebook for that topic
-3. SourceLoop records local sources, imports managed sources, or declares notebook-backed source manifests
-4. NotebookLM answers a planned set of deep questions
-5. SourceLoop archives the Q&A as Obsidian-friendly Markdown
-6. Final expression stays human-owned
+It is built for a simple idea:
 
-SourceLoop is not a NotebookLM replacement. It is an orchestration and archive layer for topic-based NotebookLM research.
+- use AI for research
+- keep grounding in real sources
+- keep the workflow reusable
+- keep human ownership over judgment and expression
 
-## What It Does
+SourceLoop is not a NotebookLM replacement. It is the workflow and archive layer around NotebookLM-based research.
 
-- Creates topic-first research roots
-- Stores local source notes and topic corpus metadata
-- Creates managed NotebookLM notebooks through an attached Chrome session
-- Imports local sources and supported remote URLs into managed notebooks
-- Declares notebook-backed source manifests for material already loaded into NotebookLM
-- Registers already signed-in Chrome targets
-- Binds a NotebookLM notebook to a topic
-- Generates deep planned research questions with bounded scope controls
-- Runs NotebookLM Q&A through an attached Chrome session with partial execution controls
-- Archives runs, questions, and answers into an Obsidian-friendly vault
+## Why This Exists
 
-## Workflow
+Most research workflows break in three places:
+
+- **weak questions**
+  - the model can answer well only if someone asks the right questions
+- **untrusted answers**
+  - generic AI answers drift, summarize poorly, or hallucinate beyond the source base
+- **no durable archive**
+  - browser-only Q&A disappears into a tab and becomes hard to reuse later
+
+SourceLoop exists to make that workflow repeatable.
+
+It gives your AI tool:
+
+- a topic model
+- a managed NotebookLM browser path
+- notebook creation or binding
+- source import and source declaration
+- planned question batches
+- local answer and citation archives
+
+## The IPO Model
+
+SourceLoop follows a simple **Input -> Process -> Output** model.
+
+### Input
+
+- local notes, files, transcripts, and URLs
+- a NotebookLM notebook
+- a managed research browser session
+
+### Process
+
+- plan better questions
+- run NotebookLM Q&A against grounded sources
+- capture answers and citations into local files
+
+### Output
+
+- a reusable Markdown research archive
+- question batches you can rerun or extend
+- material that can become memos, articles, scripts, decks, or teaching assets
+
+In short:
 
 ```text
-Topic
--> Attached Chrome / NotebookLM Session Ready
--> Managed Notebook Create or Existing Notebook Bind
--> Source Imports / Notebook-backed Source Declarations
--> Deep Question Plan
--> NotebookLM Run
--> Markdown Q&A Archive
+Sources
+  -> NotebookLM
+  -> Planned questions
+  -> Grounded answers with citations
+  -> Local Markdown archive
+  -> Your own memo, deck, article, or presentation
 ```
 
-## Preferred Usage
+## What SourceLoop Gives Your AI Tool
+
+- topic-first research workspaces
+- managed Chrome setup for NotebookLM work
+- notebook create or notebook bind flows
+- source import for local files and supported remote URLs
+- source declaration when material already exists in NotebookLM
+- default 10-question planning
+- full-batch execution by default unless you explicitly want a partial run
+- local Markdown storage for runs, answers, and citations
+
+## Why NotebookLM
+
+SourceLoop uses NotebookLM as the answer engine because NotebookLM is already strong at document-grounded research.
+
+- **Gemini-powered preprocessing**
+  - upload source material once and work from prepared source context
+- **natural-language Q&A**
+  - go beyond keyword lookup into explanation, synthesis, and comparison
+- **multi-source reasoning**
+  - connect ideas across a notebook worth of source material
+- **built-in citations**
+  - answers come with traceable source references
+- **no separate RAG infrastructure**
+  - no vector database, embedding pipeline, chunking strategy, or retrieval tuning stack to maintain
+
+SourceLoop does not try to replace those strengths. It makes them operational for AI tools.
+
+## Markdown-First Output
+
+SourceLoop is designed so the result does not disappear into a browser tab.
+
+Every run is captured as local Markdown artifacts:
+
+- planned questions
+- NotebookLM answers
+- citation-backed notes
+- run-level archives
+
+This makes the output:
+
+- **easy to reuse**
+  - turn answers into memos, decks, scripts, articles, or teaching material
+- **easy to search**
+  - keep everything in local files instead of browser history
+- **easy to extend**
+  - use previous runs as source material for later research
+- **easy to organize**
+  - keep an Obsidian-friendly archive that can grow into a real knowledge base
+- **easy to version**
+  - fit naturally into Git-based workflows
+
+SourceLoop does not just help you get answers. It helps you keep them in a form you can build on.
+
+## Security Model
+
+SourceLoop recommends using a dedicated SourceLoop-managed Chrome profile for research work.
+
+- do not use your normal personal Chrome profile as the preferred research path
+- `sourceloop chrome launch` creates a separate research browser profile
+- after signing in to Google and NotebookLM once, you can keep reusing that research session
+- this keeps research activity separate from your personal cookies, tabs, and extension context
+- if the preferred SourceLoop browser is unavailable, another Chrome session can still be used, but only after explicit user approval
+
+In short:
+
+- preferred path: a dedicated research browser
+- fallback path: another existing Chrome session
+- fallback use requires explicit user confirmation
+
+## Installation
+
+```bash
+# Install the CLI globally
+npm install -g sourceloop
+
+# Go to your project
+cd /path/to/your/project
+
+# Initialize SourceLoop
+sourceloop init
+
+# Install for Codex CLI
+sourceloop init --ai codex
+```
+
+## Usage
+
+Use SourceLoop through your AI tool in plain language.
+
+### Start New Research
+
+You can say:
+
+```text
+Start research on attention in transformers.
+```
+
+Or:
+
+```text
+Start research on attention in transformers and use this video first:
+https://www.youtube.com/watch?v=eMlx5fFNoYc
+```
+
+SourceLoop helps the AI tool:
+
+- prepare a managed research browser
+- create a topic and notebook
+- import the provided sources
+- plan a question batch
+- archive answers and citations locally
+
+### Continue Existing Research
+
+You can say:
+
+```text
+Continue research from this NotebookLM notebook:
+https://notebooklm.google.com/notebook/<real-notebook-id>
+```
+
+SourceLoop helps the AI tool:
+
+- bind the existing notebook
+- inspect the current research state
+- continue planning or running from there
+
+### If You Prefer Direct CLI
+
+Use the Golden Path below.
+
+## Golden Path
 
 ```bash
 mkdir my-research-workspace
 cd my-research-workspace
 sourceloop init --ai codex
 
-sourceloop status
-sourceloop doctor
+sourceloop status --json
+sourceloop doctor --json
 
-sourceloop topic create --name "AI agents market"
+sourceloop topic create --name "AI agents market" --json
 
-# launch a dedicated Chrome research profile, sign in to NotebookLM yourself, then validate NotebookLM home access
+# visible setup step: launch a dedicated research browser,
+# sign in yourself, then validate NotebookLM home access
 sourceloop chrome launch --name work-chrome
 sourceloop attach validate attach-work-chrome
 
 sourceloop notebook-create \
   --name "AI Agents" \
   --topic-id topic-ai-agents-market \
-  --attach-target attach-work-chrome
+  --attach-target attach-work-chrome \
+  --json
 
-# managed notebook binding ids now derive from the remote NotebookLM notebook id
-# so read the returned JSON or status output for the exact binding id before importing
-# the first managed import works even when the notebook is still empty
+# read the returned binding id from JSON or status output
 sourceloop ingest ./research-notes.md --topic topic-ai-agents-market
 
 sourceloop notebook-import \
   --notebook <managed-notebook-binding-id> \
-  --source-id <source-id>
+  --source-id <source-id> \
+  --json
 
 sourceloop notebook-import \
   --notebook <managed-notebook-binding-id> \
-  --url "https://youtube.com/watch?v=..."
+  --url "https://youtube.com/watch?v=..." \
+  --json
 
-sourceloop plan topic-ai-agents-market --max-questions 5 --families core,execution
-sourceloop run <run-id> --from-question <question-id> --limit 2
+sourceloop plan topic-ai-agents-market --max-questions 10 --json
+sourceloop run <run-id> --json
 ```
 
-If the notebook already exists and already has sources loaded in NotebookLM, keep using:
+## Operator Defaults
+
+If you use SourceLoop through Codex, Claude Code, Gemini CLI, or another local AI tool, these are the intended defaults:
+
+- start with `sourceloop status --json` and `sourceloop doctor --json`
+- ask for the topic first if the user did not provide one
+- if the user provided a topic but not sources, ask which sources to use before collecting or importing anything
+- mention that planning defaults to 10 questions unless the user wants another count
+- prefer `sourceloop chrome launch` over attaching to an unrelated Chrome profile
+- treat `sourceloop attach validate <target>` as NotebookLM home validation
+- use `--notebook-url` only when you specifically need to validate an existing notebook detail page
+- after initial setup, prefer hidden notebook actions by default and use `--show-browser` only for debugging or when the user wants to watch
+- if the plan was created for 10 questions and the user did not ask for a partial pass, run the planned batch end to end
+- use `--limit` only for explicit partial runs
+- tell the user briefly that NotebookLM actions can take a bit before waiting
+- if the wait becomes long, ask whether to keep waiting or report the current state
+- if the preferred SourceLoop browser is unavailable, ask whether to continue with the current Chrome or switch back to the SourceLoop browser
+
+## Existing Notebook Path
+
+If the notebook already exists and already has sources loaded in NotebookLM:
 
 ```bash
-sourceloop notebook-bind ...
-sourceloop notebook-source declare ...
+sourceloop notebook-bind \
+  --name "AI Agents" \
+  --topic-id topic-ai-agents-market \
+  --url "https://notebooklm.google.com/notebook/<real-notebook-id>" \
+  --attach-target attach-work-chrome \
+  --json
+
+sourceloop notebook-source declare \
+  --topic-id topic-ai-agents-market \
+  --notebook <notebook-binding-id> \
+  --kind mixed \
+  --title "AI agents market source set" \
+  --json
 ```
 
-## Operator Commands
+## Partial Runs and Backfills
 
-- `sourceloop status`
-  - shows the current workspace summary, open runs, and recommended next actions
-- `sourceloop doctor`
-  - reports missing notebook bindings, missing evidence, broken attach references, and incomplete runs
-- `--json`
-  - supported on the core workflow commands used by operators and LLM agents:
-    - `topic create|list|show`
-    - `notebook-create`
-    - `notebook-bind`
-    - `notebook-import`
-    - `notebook-source declare|list|show`
-    - `plan`
-    - `run`
-    - `status`
-    - `doctor`
+Use partial execution only when you explicitly want it.
 
-Example machine-readable flow:
+```bash
+sourceloop run <run-id> --limit 2 --json
+sourceloop run <run-id> --from-question <question-id> --json
+sourceloop run <run-id> --question-id <question-id> --json
+sourceloop import-latest <run-id> --question-id <question-id> --show-browser
+```
+
+## Machine-Readable Workflow
+
+Core operator commands support `--json`:
+
+- `topic create|list|show`
+- `notebook-create`
+- `notebook-bind`
+- `notebook-import`
+- `notebook-source declare|list|show`
+- `plan`
+- `run`
+- `status`
+- `doctor`
+
+Example:
 
 ```bash
 sourceloop status --json
@@ -110,23 +312,12 @@ sourceloop topic create --name "AI agents market" --json
 sourceloop chrome launch --name work-chrome
 sourceloop attach validate attach-work-chrome
 sourceloop notebook-create --name "AI Agents" --topic-id topic-ai-agents-market --attach-target attach-work-chrome --json
-# works for the first source on an empty managed notebook and for later add-source imports
 sourceloop notebook-import --notebook <managed-notebook-binding-id> --url "https://youtube.com/watch?v=..." --json
-sourceloop plan topic-ai-agents-market --max-questions 3 --json
-sourceloop run <run-id> --limit 1 --json
+sourceloop plan topic-ai-agents-market --max-questions 10 --json
+sourceloop run <run-id> --json
 ```
 
-`--limit` is the scope of that one run command. SourceLoop can still prefer small first passes, but the operator should let the chosen run finish before deciding whether to continue with another batch.
-
-SourceLoop recommends `sourceloop chrome launch` as the preferred NotebookLM browser setup. Shared or unknown browser profiles still work in this phase, but `doctor` and `status` will warn so operators do not treat them as the preferred setup.
-Use `sourceloop chrome launch` as the visible setup step for login and first NotebookLM checks. After that, notebook actions can stay hidden by default unless you pass `--show-browser` for debugging.
-Use `sourceloop attach validate <target>` to validate NotebookLM home readiness. Only add `--notebook-url ...` when you specifically need to confirm that an existing notebook detail view opens.
-NotebookLM actions can take a bit. Operators should say that briefly up front, and if the wait becomes long, ask whether to keep waiting or just report the current state.
-For SourceLoop-managed notebooks, NotebookLM titles are treated as best-effort labels. The durable local binding id comes from the remote NotebookLM notebook id, so operators should use the returned JSON or `status --json` output rather than guessing a slug from the requested title.
-When an LLM operator receives only "start research," it should ask for the topic first. When it has a topic but no sources, it should ask which sources to use before collecting or importing anything. Source discovery should happen only when the user explicitly asks the operator to find sources.
-When the preferred SourceLoop browser is unavailable, the operator should not silently continue with some other Chrome. It should ask the user whether to keep going with that Chrome or switch back to the SourceLoop browser.
-
-## Vault Structure
+## Vault Layout
 
 ```text
 vault/
@@ -140,7 +331,7 @@ vault/
 └─ topics/
 ```
 
-The main result is the run archive:
+Main result:
 
 ```text
 vault/runs/<run-id>/
@@ -156,25 +347,30 @@ vault/runs/<run-id>/
 
 SourceLoop stops at research packaging and Q&A archive creation.
 
-- Humans choose the topic
+- humans choose the topic
 - NotebookLM answers from the bound notebook
 - SourceLoop stores the research trace
-- Humans turn that archive into slides, scripts, memos, lessons, or deliverables
+- humans turn that archive into slides, scripts, memos, lessons, or deliverables
 
-## Status
+This is the intended split:
+
+- use AI for research
+- use humans for judgment and expression
+
+## Current Status
 
 Current focus:
 
-- Topic-first NotebookLM workflow
-- Managed notebook setup workflow
-- Attached Chrome execution
+- topic-first NotebookLM workflow
+- managed notebook setup workflow
+- attached Chrome execution
 - Obsidian-friendly Markdown archive
 
 Still rough around:
 
 - NotebookLM UI selector stability
-- Citation capture fidelity
-- Automatic NotebookLM source introspection beyond operator-declared manifests
+- citation capture fidelity
+- automatic NotebookLM source introspection beyond operator-declared manifests
 
 ## Development
 
