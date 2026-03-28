@@ -4,7 +4,7 @@ import { slugify } from "../../lib/slugify.js";
 import { writeJsonFile } from "../../lib/write-json.js";
 import { makeAliases, makeTags, normalizeObsidianText } from "../../lib/obsidian.js";
 import { toFrontmatterMarkdown } from "../ingest/frontmatter.js";
-import { loadChromeAttachTarget } from "../attach/manage-targets.js";
+import { loadChromeAttachTarget, upsertChromeAttachTarget } from "../attach/manage-targets.js";
 import {
   defaultNotebookBrowserSessionFactory,
   extractNotebookResourceId,
@@ -104,9 +104,10 @@ export async function createManagedNotebook(input: CreateManagedNotebookInput): 
     ...(input.showBrowser !== undefined ? { showBrowser: input.showBrowser } : {})
   });
 
-  try {
-    const createdNotebook = await session.createNotebook(normalizeObsidianText(input.name));
-    const remoteNotebookId = extractNotebookResourceId(createdNotebook.notebookUrl);
+    try {
+      const createdNotebook = await session.createNotebook(normalizeObsidianText(input.name));
+      await markAttachTargetNotebooklmValidated(target, workspace.rootDir);
+      const remoteNotebookId = extractNotebookResourceId(createdNotebook.notebookUrl);
     if (!remoteNotebookId) {
       throw new Error(`Could not derive a NotebookLM notebook id from ${createdNotebook.notebookUrl}`);
     }
@@ -229,6 +230,10 @@ export async function importIntoManagedNotebook(
     await session.close();
   }
 
+  if (browserResult.status !== "failed") {
+    await markAttachTargetNotebooklmValidated(target, workspace.rootDir);
+  }
+
   const now = new Date().toISOString();
   const managedImport = managedNotebookImportSchema.parse({
     id: importId,
@@ -261,6 +266,21 @@ export async function importIntoManagedNotebook(
     markdownPath: note.absolutePath,
     jsonPath
   };
+}
+
+async function markAttachTargetNotebooklmValidated(target: Awaited<ReturnType<typeof loadChromeAttachTarget>>["target"], cwd: string): Promise<void> {
+  if (target.notebooklmReadiness === "validated") {
+    return;
+  }
+
+  await upsertChromeAttachTarget(
+    {
+      ...target,
+      notebooklmReadiness: "validated",
+      notebooklmValidatedAt: new Date().toISOString()
+    },
+    { cwd, force: true }
+  );
 }
 
 export async function loadManagedNotebookSetup(

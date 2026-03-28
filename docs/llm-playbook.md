@@ -33,6 +33,8 @@ The agent should avoid guessing hidden state when the CLI can report it directly
 - Always start from `status --json` and `doctor --json`
 - Always ensure the Chrome attach target is ready before notebook creation or execution
 - Prefer `sourceloop chrome launch` so NotebookLM research uses a SourceLoop-managed isolated profile, not a shared default browsing profile
+- Treat `sourceloop attach validate <target>` as NotebookLM home validation
+- Use `sourceloop attach validate <target> --notebook-url ...` only when a specific existing notebook must open
 - Classify the kickoff request before acting:
   - topic only
   - topic plus sources
@@ -70,6 +72,7 @@ sourceloop doctor --json
 sourceloop topic create --name "Attention in transformers" --json
 
 sourceloop chrome launch --name work-chrome
+sourceloop attach validate attach-work-chrome
 
 sourceloop notebook-create \
   --name "Attention in Transformers" \
@@ -99,9 +102,7 @@ sourceloop doctor --json
 sourceloop topic create --name "AI agents market" --json
 
 sourceloop chrome launch --name work-chrome
-sourceloop attach validate \
-  attach-work-chrome \
-  --notebook-url "https://notebooklm.google.com/notebook/<real-notebook-id>"
+sourceloop attach validate attach-work-chrome
 
 sourceloop notebook-bind \
   --name "AI Agents" \
@@ -141,6 +142,7 @@ sourceloop doctor --json
 sourceloop topic create --name "AI agents market" --json
 
 sourceloop chrome launch --name work-chrome
+sourceloop attach validate attach-work-chrome
 
 sourceloop notebook-create \
   --name "AI Agents" \
@@ -211,6 +213,8 @@ This is useful for manual correction or backfilling the latest visible answer.
   - fix the blocking prerequisite first
 - no trusted isolated Chrome target
   - launch the managed Chrome profile first
+- managed isolated Chrome target exists but is still unvalidated
+  - run URL-less `attach validate` first
 - attach target isolation is `shared`, `unknown`, or only manually asserted isolated
   - surface the warning and recommend `sourceloop chrome launch` before more NotebookLM work
 - topic only and no source bundle yet

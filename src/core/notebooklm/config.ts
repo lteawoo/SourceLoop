@@ -36,22 +36,10 @@ export const NOTEBOOKLM_ANSWER_BODY_SELECTORS = [
 export const NOTEBOOKLM_CITATION_SELECTORS = [
   ".citation-marker",
   ".citation-marker [aria-label]",
-  '[dialoglabel*="citation" i]',
-  '[triggerdescription*="citation" i]',
-  '[dialoglabel*="인용"]',
-  '[triggerdescription*="인용"]',
-  "a[href]",
-  'button[aria-label]',
-  '[aria-label]',
-  '[role="button"][aria-label]',
-  '[aria-label*="source" i]',
-  '[aria-label*="sources" i]',
-  '[aria-label*="citation" i]',
-  '[aria-label*="reference" i]',
-  '[aria-label*="출처" i]',
-  '[aria-label*="근거" i]',
-  '[data-testid*="source" i]',
-  '[data-testid*="citation" i]'
+  '.citation-marker[dialoglabel*="citation" i]',
+  '.citation-marker[triggerdescription*="citation" i]',
+  '.citation-marker[dialoglabel*="인용"]',
+  '.citation-marker[triggerdescription*="인용"]'
 ] as const;
 
 export const NOTEBOOKLM_CITATION_OVERFLOW_SELECTORS = [
@@ -60,9 +48,10 @@ export const NOTEBOOKLM_CITATION_OVERFLOW_SELECTORS = [
 ] as const;
 
 export const NOTEBOOKLM_CITATION_POPOVER_SELECTORS = [
-  ".cdk-overlay-pane .xap-inline-dialog-container",
-  "xap-inline-dialog-container[role='dialog']",
-  ".xap-inline-dialog-container[role='dialog']"
+  ".cdk-overlay-pane xap-inline-dialog-container[role='dialog'][aria-label*='인용']",
+  ".cdk-overlay-pane xap-inline-dialog-container[role='dialog'][aria-label*='citation' i]",
+  "xap-inline-dialog-container[role='dialog'][aria-label*='인용']",
+  "xap-inline-dialog-container[role='dialog'][aria-label*='citation' i]"
 ] as const;
 
 export const NOTEBOOKLM_CREATE_NOTEBOOK_SELECTORS = [

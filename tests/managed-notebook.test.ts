@@ -2,7 +2,7 @@ import * as fsPromises from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { registerChromeEndpointTarget } from "../src/core/attach/manage-targets.js";
+import { loadChromeAttachTarget, registerChromeEndpointTarget } from "../src/core/attach/manage-targets.js";
 import {
   createManagedNotebook,
   importIntoManagedNotebook,
@@ -43,6 +43,7 @@ describe("managed notebook ingestion", () => {
     });
 
     const setupRecord = await loadManagedNotebookSetup(result.setup.id, workspaceRoot);
+    const reloadedAttachTarget = await loadChromeAttachTarget(attachTarget.target.id, workspaceRoot);
     const setupMarkdown = await fsPromises.readFile(result.setupMarkdownPath, "utf8");
 
     expect(result.binding.id).toBe("notebook-managed-setup");
@@ -54,6 +55,8 @@ describe("managed notebook ingestion", () => {
     expect(result.setup.remoteNotebookId).toBe("managed-setup");
     expect(result.setup.name).toBe("Managed Setup Notebook");
     expect(setupRecord.setup.notebookBindingId).toBe(result.binding.id);
+    expect(reloadedAttachTarget.target.notebooklmReadiness).toBe("validated");
+    expect(reloadedAttachTarget.target.notebooklmValidatedAt).toBeDefined();
     expect(setupMarkdown).toContain("type: managed-notebook-setup");
     expect(setupMarkdown).toContain("[[topics/");
     expect(setupMarkdown).toContain("[[notebooks/");
@@ -234,12 +237,66 @@ describe("managed notebook ingestion", () => {
     });
 
     const persisted = await loadManagedNotebookImport(result.managedImport.id, workspaceRoot);
+    const reloadedAttachTarget = await loadChromeAttachTarget(attachTarget.target.id, workspaceRoot);
     const markdown = await fsPromises.readFile(result.markdownPath, "utf8");
 
     expect(persisted.managedImport.sourceId).toBe(ingested.source.id);
     expect(persisted.managedImport.status).toBe("imported");
+    expect(reloadedAttachTarget.target.notebooklmReadiness).toBe("validated");
     expect(markdown).toContain("type: managed-notebook-import");
     expect(markdown).toContain("[[sources/");
+  });
+
+  it("treats queued managed imports as NotebookLM validation for the attach target", async () => {
+    const workspaceRoot = await fsPromises.mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
+    await initializeWorkspace({ directory: workspaceRoot, force: false });
+
+    const topic = await createTopic({
+      cwd: workspaceRoot,
+      name: "Managed queued import topic"
+    });
+    const attachTarget = await registerChromeEndpointTarget({
+      cwd: workspaceRoot,
+      name: "Managed Queued Import Chrome",
+      endpoint: "http://127.0.0.1:9222"
+    });
+    const managedNotebook = await createManagedNotebook({
+      cwd: workspaceRoot,
+      topicId: topic.topic.id,
+      name: "Managed Queued Import Notebook",
+      attachTargetId: attachTarget.target.id,
+      sessionFactory: createManagedSessionFactory({
+        createdNotebookUrl: "https://notebooklm.google.com/notebook/managed-queued-import"
+      })
+    });
+
+    const resetTarget = await loadChromeAttachTarget(attachTarget.target.id, workspaceRoot);
+    await fsPromises.writeFile(
+      resetTarget.path,
+      JSON.stringify(
+        {
+          ...resetTarget.target,
+          notebooklmReadiness: "unknown",
+          notebooklmValidatedAt: undefined
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
+
+    await importIntoManagedNotebook({
+      cwd: workspaceRoot,
+      notebookBindingId: managedNotebook.binding.id,
+      url: "https://youtube.com/watch?v=queued-validation",
+      sessionFactory: createManagedSessionFactory({
+        importResults: [{ status: "queued" }]
+      })
+    });
+
+    const reloadedAttachTarget = await loadChromeAttachTarget(attachTarget.target.id, workspaceRoot);
+    expect(reloadedAttachTarget.target.notebooklmReadiness).toBe("validated");
+    expect(reloadedAttachTarget.target.notebooklmValidatedAt).toBeDefined();
   });
 
   it("passes the canonical notebook URL into the first managed import and derives a usable YouTube title", async () => {
