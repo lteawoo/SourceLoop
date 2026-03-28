@@ -6,7 +6,8 @@ import {
   listChromeAttachTargets,
   loadChromeAttachTarget,
   registerChromeEndpointTarget,
-  registerChromeProfileTarget
+  registerChromeProfileTarget,
+  upsertChromeAttachTarget
 } from "../src/core/attach/manage-targets.js";
 import { attachCommand } from "../src/commands/attach.js";
 import { bindNotebook } from "../src/core/notebooks/bind-notebook.js";
@@ -311,6 +312,57 @@ describe("Attached NotebookLM runs", () => {
     expect(runIndex.attachedChromeTargetId).toBe(attachTarget.target.id);
     expect(runMarkdown).toContain("Attach Target:");
     expect(runMarkdown).toContain("[[chrome-targets/");
+  });
+
+  it("closes SourceLoop-managed Chrome after attached execution completes", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
+    await initializeWorkspace({ directory: workspaceRoot, force: false });
+
+    const attachTarget = {
+      id: "attach-managed-runner",
+      type: "chrome_attach_target",
+      name: "Managed Runner Chrome",
+      profileIsolation: "isolated",
+      ownership: "sourceloop_managed",
+      targetType: "profile",
+      profileDirPath: path.join(workspaceRoot, ".sourceloop", "chrome-profiles", "managed-runner"),
+      launchArgs: [],
+      createdAt: new Date().toISOString()
+    } satisfies ChromeAttachTarget;
+    await upsertChromeAttachTarget(attachTarget, { cwd: workspaceRoot, force: true });
+
+    const binding = await bindNotebook({
+      cwd: workspaceRoot,
+      name: "Managed Attached Notebook",
+      topic: "managed-attached-run",
+      notebookUrl: "https://notebooklm.google.com/notebook/managed-attached",
+      accessMode: "owner",
+      attachTargetId: attachTarget.id
+    });
+    const plan = await createQuestionPlan({
+      cwd: workspaceRoot,
+      topic: "managed attached execution",
+      notebookBindingId: binding.binding.id
+    });
+
+    let closeManagedChromeCalled = false;
+    const adapter = new BrowserAgentNotebookRunnerAdapter({
+      attachTarget,
+      cwd: workspaceRoot,
+      sessionFactory: createSuccessSessionFactory(),
+      closeManagedChrome: async () => {
+        closeManagedChromeCalled = true;
+      }
+    });
+
+    const result = await executeQARun({
+      cwd: workspaceRoot,
+      runId: plan.run.id,
+      adapter
+    });
+
+    expect(result.run.status).toBe("completed");
+    expect(closeManagedChromeCalled).toBe(true);
   });
 
   it("fails before execution when attached preflight cannot use NotebookLM", async () => {

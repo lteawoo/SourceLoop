@@ -1,5 +1,5 @@
 import { Command } from "commander";
-import { launchManagedChrome } from "../core/attach/launch-managed-chrome.js";
+import { closeManagedChrome, launchManagedChrome } from "../core/attach/launch-managed-chrome.js";
 import { writeJsonOutput, writeTextOutput } from "../lib/cli-output.js";
 
 export const chromeCommand = new Command("chrome").description(
@@ -45,3 +45,23 @@ chromeCommand
       );
     }
   );
+
+chromeCommand
+  .command("close")
+  .description("Close a SourceLoop-managed isolated Chrome browser")
+  .argument("<target-id>", "managed Chrome attach target id")
+  .option("--json", "emit machine-readable JSON", false)
+  .action(async (targetId: string, options: { json: boolean }) => {
+    const result = await closeManagedChrome({ targetId });
+
+    if (options.json) {
+      writeJsonOutput(result);
+      return;
+    }
+
+    writeTextOutput(
+      result.closed
+        ? `Closed managed Chrome ${result.targetId}${result.processId ? ` (pid ${result.processId})` : ""}`
+        : `Managed Chrome ${result.targetId} is not running.`
+    );
+  });

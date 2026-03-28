@@ -101,6 +101,7 @@ async function createAttachedBrowserAdapter(
   const { target } = await loadChromeAttachTarget(attachTargetId);
   return new BrowserAgentNotebookRunnerAdapter({
     attachTarget: target,
-    showBrowser
+    showBrowser,
+    cwd: process.cwd()
   });
 }

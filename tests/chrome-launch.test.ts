@@ -2,9 +2,9 @@ import { mkdtemp, readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { launchManagedChrome } from "../src/core/attach/launch-managed-chrome.js";
+import { closeManagedChrome, launchManagedChrome } from "../src/core/attach/launch-managed-chrome.js";
 import { initializeWorkspace } from "../src/core/workspace/init-workspace.js";
-import { registerChromeEndpointTarget } from "../src/core/attach/manage-targets.js";
+import { loadChromeAttachTarget, registerChromeEndpointTarget, upsertChromeAttachTarget } from "../src/core/attach/manage-targets.js";
 
 describe("managed chrome launch", () => {
   it("creates a SourceLoop-managed isolated attach target and workspace-local profile", async () => {
@@ -24,6 +24,7 @@ describe("managed chrome launch", () => {
         spawnChromeProcess(executablePath, args) {
           spawned.push({ executablePath, args });
           return {
+            pid: 43210,
             kill() {
               return true;
             },
@@ -42,6 +43,7 @@ describe("managed chrome launch", () => {
     expect(result.target.profileIsolation).toBe("isolated");
     expect(result.target.ownership).toBe("sourceloop_managed");
     expect(result.target.notebooklmReadiness).toBe("unknown");
+    expect(result.target.currentProcessId).toBe(43210);
     expect(result.profileDirPath).toBe(path.join(workspaceRoot, ".sourceloop", "chrome-profiles", "research-chrome"));
     expect(result.endpoint).toBe("http://127.0.0.1:9333");
     expect(result.launched).toBe(true);
@@ -61,12 +63,13 @@ describe("managed chrome launch", () => {
       resolveChromeExecutablePath: async () => "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
       allocateFreePort: async () => 9444,
       waitForRemoteDebuggingEndpoint: async () => undefined,
-      spawnChromeProcess() {
-        spawnCount += 1;
-        return {
-          kill() {
-            return true;
-          },
+        spawnChromeProcess() {
+          spawnCount += 1;
+          return {
+            pid: 53210,
+            kill() {
+              return true;
+            },
           unref() {
             return undefined;
           }
@@ -129,5 +132,56 @@ describe("managed chrome launch", () => {
         }
       )
     ).rejects.toThrow(/already exists and is not a SourceLoop-managed isolated profile/i);
+  });
+
+  it("closes a managed Chrome target and clears its tracked process id", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
+    await initializeWorkspace({ directory: workspaceRoot, force: false });
+
+    const launched = await launchManagedChrome(
+      {
+        cwd: workspaceRoot,
+        name: "Research Chrome"
+      },
+      {
+        resolveChromeExecutablePath: async () => "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        allocateFreePort: async () => 9777,
+        waitForRemoteDebuggingEndpoint: async () => undefined,
+        spawnChromeProcess() {
+          return {
+            pid: 65432,
+            kill() {
+              return true;
+            },
+            unref() {
+              return undefined;
+            }
+          };
+        }
+      }
+    );
+
+    const result = await closeManagedChrome(
+      {
+        targetId: launched.target.id,
+        cwd: workspaceRoot
+      },
+      {
+        loadChromeAttachTarget,
+        upsertChromeAttachTarget,
+        findRunningProcessId: async () => 65432,
+        terminateProcess: async (processId: number) => processId === 65432
+      }
+    );
+
+    const reloaded = await loadChromeAttachTarget(launched.target.id, workspaceRoot);
+
+    expect(result).toEqual({
+      targetId: launched.target.id,
+      closed: true,
+      processId: 65432
+    });
+    expect(reloaded.target.targetType).toBe("profile");
+    expect(reloaded.target.currentProcessId).toBeUndefined();
   });
 });

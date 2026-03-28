@@ -2,6 +2,7 @@ import type { ChromeAttachTarget } from "../../schemas/attach.js";
 import type { NotebookBinding } from "../../schemas/notebook.js";
 import type { PlannedQuestion } from "../../schemas/run.js";
 import type { NotebookRunnerAdapter, NotebookRunnerAnswer } from "./adapter.js";
+import { closeManagedChromeIfOwnedTarget } from "../attach/launch-managed-chrome.js";
 import {
   defaultNotebookBrowserSessionFactory,
   type NotebookBrowserSession,
@@ -16,6 +17,8 @@ export class BrowserAgentNotebookRunnerAdapter implements NotebookRunnerAdapter 
     private readonly options: {
       attachTarget: ChromeAttachTarget;
       showBrowser?: boolean;
+      cwd?: string;
+      closeManagedChrome?: typeof closeManagedChromeIfOwnedTarget;
       sessionFactory?: NotebookBrowserSessionFactory;
     }
   ) {}
@@ -51,5 +54,12 @@ export class BrowserAgentNotebookRunnerAdapter implements NotebookRunnerAdapter 
   async dispose(): Promise<void> {
     await this.session?.close();
     this.session = undefined;
+    const closeManagedChrome = this.options.closeManagedChrome ?? closeManagedChromeIfOwnedTarget;
+    await closeManagedChrome(
+      {
+        target: this.options.attachTarget,
+        ...(this.options.cwd ? { cwd: this.options.cwd } : {})
+      }
+    ).catch(() => undefined);
   }
 }

@@ -71,6 +71,7 @@ describe("initializeWorkspace", () => {
     expect(skillMarkdown).toContain("default planned question count is 10");
     expect(skillMarkdown).toContain("prefer running the full batch");
     expect(skillMarkdown).toContain("Do not autonomously search the web or choose source materials");
+    expect(skillMarkdown).toContain("Do not do sidecar source analysis or answer drafting while waiting");
     expect(skillMarkdown).toContain("Do not silently fall back to another Chrome session");
     expect(skillMarkdown).toContain("Ask the user before continuing with a non-SourceLoop browser");
     expect(skillMarkdown).toContain("trusted isolated Chrome target");
@@ -81,6 +82,7 @@ describe("initializeWorkspace", () => {
     expect(playbookReference).toContain("If the user did not provide a topic, ask for the topic first");
     expect(playbookReference).toContain("planning defaults to 10 questions");
     expect(playbookReference).toContain("run the full remaining batch");
+    expect(playbookReference).toContain("wait on that blocker only instead of doing outside source analysis in parallel");
     expect(playbookReference).toContain("do not silently continue on that path");
     expect(playbookReference).toContain("visible setup step");
     expect(playbookReference).toContain("let that command complete before asking whether to continue");
@@ -116,7 +118,9 @@ describe("initializeWorkspace", () => {
       expect(skillMarkdown).toContain("sourceloop doctor --json");
       expect(skillMarkdown).toContain("sourceloop chrome launch");
       expect(skillMarkdown).toContain("sourceloop run ... --json");
+      expect(skillMarkdown).toContain("Do not do sidecar source analysis or answer drafting while waiting");
       expect(playbookReference).toContain("# SourceLoop Operator Playbook");
+      expect(playbookReference).toContain("do not spend that waiting time producing outside source summaries or speculative answer drafts");
     });
   }
 
