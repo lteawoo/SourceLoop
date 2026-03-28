@@ -5,10 +5,11 @@ SourceLoop is a local-first research runner that connects a topic, a NotebookLM 
 It is designed for the workflow:
 
 1. A human chooses a topic
-2. SourceLoop records local sources or notebook-backed source manifests around that topic
-3. NotebookLM answers a planned set of deep questions
-4. SourceLoop archives the Q&A as Obsidian-friendly Markdown
-5. Final expression stays human-owned
+2. SourceLoop creates or binds a NotebookLM notebook for that topic
+3. SourceLoop records local sources, imports managed sources, or declares notebook-backed source manifests
+4. NotebookLM answers a planned set of deep questions
+5. SourceLoop archives the Q&A as Obsidian-friendly Markdown
+6. Final expression stays human-owned
 
 SourceLoop is not a NotebookLM replacement. It is an orchestration and archive layer for topic-based NotebookLM research.
 
@@ -16,6 +17,8 @@ SourceLoop is not a NotebookLM replacement. It is an orchestration and archive l
 
 - Creates topic-first research roots
 - Stores local source notes and topic corpus metadata
+- Creates managed NotebookLM notebooks through an attached Chrome session
+- Imports local sources and supported remote URLs into managed notebooks
 - Declares notebook-backed source manifests for material already loaded into NotebookLM
 - Registers already signed-in Chrome targets
 - Binds a NotebookLM notebook to a topic
@@ -27,8 +30,8 @@ SourceLoop is not a NotebookLM replacement. It is an orchestration and archive l
 
 ```text
 Topic
--> Sources / Notebook-backed Source Declarations
--> Notebook Binding
+-> Managed Notebook Create or Existing Notebook Bind
+-> Source Imports / Notebook-backed Source Declarations
 -> Deep Question Plan
 -> NotebookLM Run
 -> Markdown Q&A Archive
@@ -48,21 +51,30 @@ sourceloop topic create --name "AI agents market"
 # sign in to NotebookLM in Chrome yourself first
 sourceloop attach endpoint --name work-chrome --endpoint http://127.0.0.1:9222
 
-sourceloop notebook-bind \
+sourceloop notebook-create \
   --name "AI Agents" \
   --topic-id topic-ai-agents-market \
-  --url "https://notebooklm.google.com/notebook/..." \
   --attach-target attach-work-chrome
 
-sourceloop notebook-source declare \
-  --topic-id topic-ai-agents-market \
+sourceloop ingest ./research-notes.md --topic topic-ai-agents-market
+
+sourceloop notebook-import \
   --notebook notebook-ai-agents \
-  --kind youtube-playlist \
-  --title "AI agents market source set" \
-  --ref "https://youtube.com/playlist?list=..."
+  --source-id <source-id>
+
+sourceloop notebook-import \
+  --notebook notebook-ai-agents \
+  --url "https://youtube.com/watch?v=..."
 
 sourceloop plan topic-ai-agents-market --max-questions 5 --families core,execution
 sourceloop run <run-id> --from-question <question-id> --limit 2 --show-browser
+```
+
+If the notebook already exists and already has sources loaded in NotebookLM, keep using:
+
+```bash
+sourceloop notebook-bind ...
+sourceloop notebook-source declare ...
 ```
 
 ## Operator Commands
@@ -74,7 +86,9 @@ sourceloop run <run-id> --from-question <question-id> --limit 2 --show-browser
 - `--json`
   - supported on the core workflow commands used by operators and LLM agents:
     - `topic create|list|show`
+    - `notebook-create`
     - `notebook-bind`
+    - `notebook-import`
     - `notebook-source declare|list|show`
     - `plan`
     - `run`
@@ -87,6 +101,8 @@ Example machine-readable flow:
 sourceloop status --json
 sourceloop doctor --json
 sourceloop topic create --name "AI agents market" --json
+sourceloop notebook-create --name "AI Agents" --topic-id topic-ai-agents-market --attach-target attach-work-chrome --json
+sourceloop notebook-import --notebook notebook-ai-agents --url "https://youtube.com/watch?v=..." --json
 sourceloop plan topic-ai-agents-market --max-questions 3 --json
 sourceloop run <run-id> --limit 1 --json
 ```
@@ -96,6 +112,8 @@ sourceloop run <run-id> --limit 1 --json
 ```text
 vault/
 ├─ chrome-targets/
+├─ notebook-imports/
+├─ notebook-setups/
 ├─ notebooks/
 ├─ notebook-sources/
 ├─ runs/
@@ -129,6 +147,7 @@ SourceLoop stops at research packaging and Q&A archive creation.
 Current focus:
 
 - Topic-first NotebookLM workflow
+- Managed notebook setup workflow
 - Attached Chrome execution
 - Obsidian-friendly Markdown archive
 

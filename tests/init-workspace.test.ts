@@ -24,6 +24,8 @@ describe("initializeWorkspace", () => {
     expect(config.paths.topics).toBe("vault/topics");
     expect(config.paths.sources).toBe("vault/sources");
     expect(config.paths.notebookSources).toBe("vault/notebook-sources");
+    expect(config.paths.notebookSetups).toBe("vault/notebook-setups");
+    expect(config.paths.notebookImports).toBe("vault/notebook-imports");
     expect(config.paths.notebooks).toBe("vault/notebooks");
     expect(config.paths.bundles).toBe("vault/bundles");
     expect(config.paths.runs).toBe("vault/runs");
@@ -59,5 +61,7 @@ describe("initializeWorkspace", () => {
     expect(workspace.config.paths.topics).toBe("vault/topics");
     expect(workspace.config.paths.sources).toBe("vault/sources");
     expect(workspace.config.paths.notebookSources).toBe("vault/notebook-sources");
+    expect(workspace.config.paths.notebookSetups).toBe("vault/notebook-setups");
+    expect(workspace.config.paths.notebookImports).toBe("vault/notebook-imports");
   });
 });

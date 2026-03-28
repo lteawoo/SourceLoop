@@ -6,6 +6,8 @@ export const WORKSPACE_DIRECTORIES = [
   "vault/topics",
   "vault/sources",
   "vault/notebook-sources",
+  "vault/notebook-setups",
+  "vault/notebook-imports",
   "vault/bundles",
   "vault/notebooks",
   "vault/runs",

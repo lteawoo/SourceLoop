@@ -29,6 +29,8 @@ function withWorkspaceDefaults(config: Partial<WorkspaceConfig>): WorkspaceConfi
       topics: config.paths?.topics ?? "vault/topics",
       sources: config.paths?.sources ?? "vault/sources",
       notebookSources: config.paths?.notebookSources ?? "vault/notebook-sources",
+      notebookSetups: config.paths?.notebookSetups ?? "vault/notebook-setups",
+      notebookImports: config.paths?.notebookImports ?? "vault/notebook-imports",
       notebooks: config.paths?.notebooks ?? "vault/notebooks",
       bundles: config.paths?.bundles ?? "vault/bundles",
       runs: config.paths?.runs ?? "vault/runs",

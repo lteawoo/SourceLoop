@@ -69,6 +69,8 @@ function buildWorkspaceConfig(): WorkspaceConfig {
       topics: "vault/topics",
       sources: "vault/sources",
       notebookSources: "vault/notebook-sources",
+      notebookSetups: "vault/notebook-setups",
+      notebookImports: "vault/notebook-imports",
       notebooks: "vault/notebooks",
       bundles: "vault/bundles",
       runs: "vault/runs",
