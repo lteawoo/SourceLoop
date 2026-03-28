@@ -290,11 +290,11 @@ export async function buildDoctorReport(cwd?: string): Promise<DoctorReport> {
           ...(binding.topicId ? { topicId: binding.topicId } : {}),
           message:
             attachTarget.profileIsolation === "shared"
-              ? `Notebook binding ${binding.id} uses shared Chrome attach target ${attachTarget.id}. SourceLoop recommends launching a managed isolated research browser instead.`
+              ? `Notebook binding ${binding.id} is using a different Chrome than the SourceLoop browser. Ask whether to keep going with that Chrome or switch back to the SourceLoop browser.`
               : attachTarget.profileIsolation === "unknown"
-                ? `Notebook binding ${binding.id} uses Chrome attach target ${attachTarget.id} with unknown profile isolation. SourceLoop recommends launching a managed isolated research browser instead.`
+                ? `Notebook binding ${binding.id} is using a different Chrome than the SourceLoop browser. Ask whether to keep going with that Chrome or switch back to the SourceLoop browser.`
                 : attachTarget.ownership !== "sourceloop_managed"
-                  ? `Notebook binding ${binding.id} uses manually registered isolated Chrome attach target ${attachTarget.id}. SourceLoop still recommends a managed isolated research browser as the preferred setup.`
+                  ? `Notebook binding ${binding.id} is using a different Chrome than the SourceLoop browser. Ask whether to keep going with that Chrome or switch back to the SourceLoop browser.`
                   : `Notebook binding ${binding.id} uses managed isolated Chrome attach target ${attachTarget.id}, but it has not been validated against NotebookLM yet.`,
           suggestedCommand: buildAttachSafetyCommand(attachTarget)
         });
@@ -687,11 +687,11 @@ function recommendNextActions(
           notebookBindingId: riskyBinding.id,
           message:
             attachTarget.profileIsolation === "shared"
-              ? `Replace shared Chrome attach target ${attachTarget.id} before continuing NotebookLM work for topic ${topic.id}.`
+              ? `Ask whether to keep going with the current Chrome or switch back to the SourceLoop browser before continuing topic ${topic.id}.`
               : attachTarget.profileIsolation === "unknown"
-                ? `Launch a managed isolated Chrome target instead of ${attachTarget.id} before continuing NotebookLM work for topic ${topic.id}.`
+                ? `Ask whether to keep going with the current Chrome or switch back to the SourceLoop browser before continuing topic ${topic.id}.`
                 : attachTarget.ownership !== "sourceloop_managed"
-                  ? `Replace manual isolated Chrome attach target ${attachTarget.id} with a SourceLoop-managed isolated target before continuing NotebookLM work for topic ${topic.id}.`
+                  ? `Ask whether to keep going with the current Chrome or switch back to the SourceLoop browser before continuing topic ${topic.id}.`
                   : `Validate managed isolated Chrome attach target ${attachTarget.id} against NotebookLM before continuing work for topic ${topic.id}.`,
           command: buildAttachSafetyCommand(attachTarget)
         });
@@ -826,7 +826,7 @@ function buildAttachSafetyCommand(target: ChromeAttachTarget): string {
   if (isManagedIsolatedAttachTarget(target) && target.notebooklmReadiness !== "validated") {
     return `sourceloop attach validate ${target.id}`;
   }
-  return `sourceloop chrome launch --name "${target.name}" --force`;
+  return `Ask the user: keep going with the current Chrome, or switch to the SourceLoop browser with 'sourceloop chrome launch --name "${target.name}" --force'?`;
 }
 
 function isManagedIsolatedAttachTarget(target: ChromeAttachTarget): boolean {

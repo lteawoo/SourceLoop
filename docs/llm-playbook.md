@@ -33,12 +33,18 @@ The agent should avoid guessing hidden state when the CLI can report it directly
 - Always start from `status --json` and `doctor --json`
 - Always ensure the Chrome attach target is ready before notebook creation or execution
 - Prefer `sourceloop chrome launch` so NotebookLM research uses a SourceLoop-managed isolated profile, not a shared default browsing profile
+- Treat `sourceloop chrome launch` as the visible setup step for login and first NotebookLM checks
+- After setup, prefer hidden notebook actions by default and add `--show-browser` only when debugging or when the user wants to watch
 - Treat `sourceloop attach validate <target>` as NotebookLM home validation
 - Use `sourceloop attach validate <target> --notebook-url ...` only when a specific existing notebook must open
 - Classify the kickoff request before acting:
+  - no topic provided
   - topic only
   - topic plus sources
   - existing NotebookLM URL
+- If the user did not provide a topic, ask which topic to research before doing anything else
+- If the user provided a topic but no sources, ask which sources to use before collecting or importing anything
+- Do not autonomously search the web or choose source materials unless the user explicitly asked the agent to find sources
 - Do not run `plan` unless the topic has usable evidence
 - Do not run `run` unless the topic has a bound notebook and a planned run
 - Prefer `notebook-create` + `notebook-import` when the notebook does not already exist
@@ -57,8 +63,19 @@ When entering NotebookLM, the agent should only verify:
 3. the expected create or bind path is reachable
 
 If any of those checks fail, the agent must not wander through the UI. It should stop and ask the user to fix login, access, or landing-page state first.
+If only another Chrome is available, the agent must not silently continue on that path. It should ask the user whether to keep going with that Chrome or switch back to the SourceLoop browser first.
 
-## Scenario 0: Topic Only Kickoff
+## Scenario 0: No Topic Provided
+
+Use this when the user says "start research" or equivalent but does not provide a topic yet.
+
+### Flow
+
+- ask which topic to research
+- stop there until the user answers
+- do not create notebooks, import sources, or search for starter materials yet
+
+## Scenario 1: Topic Only Kickoff
 
 Use this when the user gives only a topic and no notebook URL or source bundle yet.
 
@@ -85,10 +102,11 @@ sourceloop notebook-create \
 
 - stop before planning
 - ask the user which sources should be imported
+- do not search the web or choose source materials unless the user explicitly asked for source finding
 - use `notebook-import` for the first source even if the managed notebook is still empty
 - continue only after usable evidence exists
 
-## Scenario 1: Existing NotebookLM Notebook
+## Scenario 2: Existing NotebookLM Notebook
 
 Use this when the user already has a notebook and the source bundle is already loaded in NotebookLM.
 
@@ -128,7 +146,7 @@ sourceloop run <run-id> --limit 2 --show-browser --json
 - the user already prepared NotebookLM
 - SourceLoop only needs to bind, declare evidence, and run research
 
-## Scenario 2: Managed Notebook Setup
+## Scenario 3: Managed Notebook Setup
 
 Use this when the user has source material but no prepared NotebookLM notebook.
 
@@ -176,7 +194,7 @@ sourceloop run <run-id> --limit 2 --show-browser --json
 - the notebook should be created by SourceLoop
 - the requested notebook title is only a display label; the durable binding id comes from the remote notebook resource id
 
-## Scenario 3: Controlled Research Passes
+## Scenario 4: Controlled Research Passes
 
 Use bounded planning and execution by default.
 
@@ -197,7 +215,7 @@ sourceloop run <run-id> --from-question <question-id> --limit 2 --json
 sourceloop run <run-id> --question-id <question-id> --json
 ```
 
-## Scenario 4: Import an Existing Latest Answer
+## Scenario 5: Import an Existing Latest Answer
 
 Use this when a reply already exists in NotebookLM and the agent wants to capture it without asking a new question.
 
@@ -211,14 +229,20 @@ This is useful for manual correction or backfilling the latest visible answer.
 
 - `doctor` has `error`
   - fix the blocking prerequisite first
+- no topic provided
+  - ask which topic to research before doing anything else
 - no trusted isolated Chrome target
   - launch the managed Chrome profile first
 - managed isolated Chrome target exists but is still unvalidated
   - run URL-less `attach validate` first
 - attach target isolation is `shared`, `unknown`, or only manually asserted isolated
-  - surface the warning and recommend `sourceloop chrome launch` before more NotebookLM work
+  - surface the warning
+  - ask the user whether to keep going with the current Chrome or switch back to `sourceloop chrome launch`
+  - do not silently continue on that path
 - topic only and no source bundle yet
   - create the notebook, then ask which sources to add
+- topic provided but no sources requested
+  - do not search for or choose source materials unless the user explicitly asked for source finding
 - no notebook binding
   - create or bind a notebook
 - notebook exists but no usable evidence

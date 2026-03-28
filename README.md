@@ -117,8 +117,11 @@ sourceloop run <run-id> --limit 1 --json
 ```
 
 SourceLoop recommends `sourceloop chrome launch` as the preferred NotebookLM browser setup. Shared or unknown browser profiles still work in this phase, but `doctor` and `status` will warn so operators do not treat them as the preferred setup.
+Use `sourceloop chrome launch` as the visible setup step for login and first NotebookLM checks. After that, notebook actions can stay hidden by default unless you pass `--show-browser` for debugging.
 Use `sourceloop attach validate <target>` to validate NotebookLM home readiness. Only add `--notebook-url ...` when you specifically need to confirm that an existing notebook detail view opens.
 For SourceLoop-managed notebooks, NotebookLM titles are treated as best-effort labels. The durable local binding id comes from the remote NotebookLM notebook id, so operators should use the returned JSON or `status --json` output rather than guessing a slug from the requested title.
+When an LLM operator receives only "start research," it should ask for the topic first. When it has a topic but no sources, it should ask which sources to use before collecting or importing anything. Source discovery should happen only when the user explicitly asks the operator to find sources.
+When the preferred SourceLoop browser is unavailable, the operator should not silently continue with some other Chrome. It should ask the user whether to keep going with that Chrome or switch back to the SourceLoop browser.
 
 ## Vault Structure
 
