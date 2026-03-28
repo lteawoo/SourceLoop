@@ -197,6 +197,15 @@ node /Users/twlee/projects/SourceLoop/dist/index.js plan \
 
 Capture the printed `run-id`.
 
+Optional focused planning:
+
+```bash
+node /Users/twlee/projects/SourceLoop/dist/index.js plan \
+  topic-professional-web-design-with-claude-code \
+  --max-questions 3 \
+  --families core,execution
+```
+
 ### 9. Run NotebookLM end to end
 
 Run:
@@ -211,6 +220,24 @@ Check:
 - the shell prompt returns after completion
 - attached Chrome stays open
 - exchange notes are created under `vault/runs/<run-id>/exchanges/`
+
+Optional partial execution:
+
+```bash
+node /Users/twlee/projects/SourceLoop/dist/index.js run <run-id> \
+  --from-question <question-id> \
+  --limit 2 \
+  --show-browser
+```
+
+Or target explicit planned questions:
+
+```bash
+node /Users/twlee/projects/SourceLoop/dist/index.js run <run-id> \
+  --question-id <question-id-1> \
+  --question-id <question-id-2> \
+  --show-browser
+```
 
 ### 10. Import the latest existing NotebookLM answer without asking a new question
 

@@ -2,7 +2,15 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { loadWorkspace } from "../workspace/load-workspace.js";
 import { getRunPaths } from "../vault/paths.js";
-import { questionBatchSchema, runIndexSchema, type PlannedQuestion, type QARunIndex, type QuestionBatch } from "../../schemas/run.js";
+import {
+  questionBatchSchema,
+  questionKindSchema,
+  runIndexSchema,
+  type PlannedQuestion,
+  type PlanningScope,
+  type QARunIndex,
+  type QuestionBatch
+} from "../../schemas/run.js";
 import { toFrontmatterMarkdown } from "../ingest/frontmatter.js";
 import { writeJsonFile } from "../../lib/write-json.js";
 import { slugify } from "../../lib/slugify.js";
@@ -22,6 +30,8 @@ export type CreateQuestionPlanInput = {
   topicId?: string;
   notebookBindingId?: string;
   objective?: string;
+  maxQuestions?: number;
+  families?: string[];
   cwd?: string;
 };
 
@@ -55,7 +65,8 @@ export async function createQuestionPlan(
     topicRecord?.topic.goal ??
     `Research ${topicName} through a planned NotebookLM Q&A run.`;
   const intendedOutput = topicRecord?.topic.intendedOutput;
-  const questions = buildPlannedQuestions(topicName, objective, intendedOutput);
+  const planningScope = normalizePlanningScope(input.maxQuestions, input.families);
+  const questions = buildPlannedQuestions(topicName, objective, intendedOutput, planningScope);
   const questionFamilies = [...new Set(questions.map((question) => question.kind))];
   const runId = buildRunId(topicName, timestamp);
 
@@ -68,6 +79,7 @@ export async function createQuestionPlan(
     objective,
     intendedOutput,
     questionFamilies,
+    ...(planningScope ? { planningScope } : {}),
     createdAt,
     questions
   });
@@ -80,6 +92,7 @@ export async function createQuestionPlan(
     notebookBindingId,
     questionBatchId: batch.id,
     status: "planned",
+    ...(planningScope ? { planningScope } : {}),
     createdAt,
     updatedAt: createdAt,
     completedQuestionIds: [],
@@ -127,7 +140,12 @@ function buildRunId(topic: string, timestamp: Date): string {
   return `run-${slugify(topic)}-${time}`;
 }
 
-export function buildPlannedQuestions(topic: string, objective: string, intendedOutput?: string): PlannedQuestion[] {
+export function buildPlannedQuestions(
+  topic: string,
+  objective: string,
+  intendedOutput?: string,
+  planningScope?: PlanningScope
+): PlannedQuestion[] {
   const prompts = [
     {
       kind: "core",
@@ -181,13 +199,34 @@ export function buildPlannedQuestions(topic: string, objective: string, intended
     }
   ] as const;
 
-  return prompts.map((entry, index) => ({
+  const filteredPrompts = prompts.filter((entry) =>
+    planningScope?.selectedFamilies?.length ? planningScope.selectedFamilies.includes(entry.kind) : true
+  );
+  const scopedPrompts =
+    planningScope?.maxQuestions !== undefined
+      ? filteredPrompts.slice(0, planningScope.maxQuestions)
+      : filteredPrompts;
+
+  return scopedPrompts.map((entry, index) => ({
     id: `q${String(index + 1).padStart(2, "0")}-${randomUUID().replace(/-/g, "").slice(0, 6)}`,
       kind: entry.kind,
       prompt: entry.prompt,
       objective: index === 0 ? objective : entry.objective,
       order: index
     }));
+}
+
+function normalizePlanningScope(maxQuestions?: number, families?: string[]): PlanningScope | undefined {
+  const selectedFamilies = families?.map((family) => questionKindSchema.parse(family));
+  if (maxQuestions === undefined && (!selectedFamilies || selectedFamilies.length === 0)) {
+    return undefined;
+  }
+
+  const scope = {
+    ...(maxQuestions !== undefined ? { maxQuestions } : {}),
+    ...(selectedFamilies && selectedFamilies.length > 0 ? { selectedFamilies } : {})
+  };
+  return scope;
 }
 
 function buildQuestionsMarkdown(
@@ -221,6 +260,8 @@ function buildQuestionsMarkdown(
       objective: batch.objective,
       ...(batch.intendedOutput ? { output: batch.intendedOutput } : {}),
       families: batch.questionFamilies,
+      ...(batch.planningScope?.maxQuestions ? { max_questions: String(batch.planningScope.maxQuestions) } : {}),
+      ...(batch.planningScope?.selectedFamilies ? { selected_families: batch.planningScope.selectedFamilies } : {}),
       created: batch.createdAt,
       updated: batch.createdAt
     },
@@ -245,10 +286,23 @@ function buildQuestionsMarkdown(
           : topicTitle
       }`,
       `- Notebook: ${toWikiLink(workspace, getNotebookNote(workspace, binding).absolutePath, getNotebookNote(workspace, binding).title)}`,
+      `- Planning Scope: ${describePlanningScope(batch)}`,
       "",
       ...sections
     ].join("\n")
   );
+}
+
+function describePlanningScope(batch: QuestionBatch): string {
+  const parts: string[] = [];
+  if (batch.planningScope?.maxQuestions !== undefined) {
+    parts.push(`max ${batch.planningScope.maxQuestions} questions`);
+  }
+  if (batch.planningScope?.selectedFamilies?.length) {
+    parts.push(`families: ${batch.planningScope.selectedFamilies.join(", ")}`);
+  }
+
+  return parts.length > 0 ? parts.join(" | ") : "default planner scope";
 }
 
 async function resolveNotebookBindingIdForTopic(rootDir: string, topicId: string): Promise<string> {

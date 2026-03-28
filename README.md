@@ -18,8 +18,8 @@ SourceLoop is not a NotebookLM replacement. It is an orchestration and archive l
 - Stores local source notes and topic corpus metadata
 - Registers already signed-in Chrome targets
 - Binds a NotebookLM notebook to a topic
-- Generates deep planned research questions
-- Runs NotebookLM Q&A through an attached Chrome session
+- Generates deep planned research questions with bounded scope controls
+- Runs NotebookLM Q&A through an attached Chrome session with partial execution controls
 - Archives runs, questions, and answers into an Obsidian-friendly vault
 
 ## Workflow
@@ -51,8 +51,8 @@ sourceloop notebook-bind \
   --url "https://notebooklm.google.com/notebook/..." \
   --attach-target attach-work-chrome
 
-sourceloop plan topic-ai-agents-market
-sourceloop run <run-id> --show-browser
+sourceloop plan topic-ai-agents-market --max-questions 5 --families core,execution
+sourceloop run <run-id> --from-question <question-id> --limit 2 --show-browser
 ```
 
 ## Vault Structure

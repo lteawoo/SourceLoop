@@ -11,6 +11,17 @@ export const plannedQuestionSchema = z.object({
   order: z.number().int().nonnegative()
 });
 
+export const planningScopeSchema = z.object({
+  maxQuestions: z.number().int().positive().optional(),
+  selectedFamilies: z.array(questionKindSchema).min(1).optional()
+});
+
+export const executionScopeSchema = z.object({
+  questionIds: z.array(z.string().min(1)).min(1).optional(),
+  fromQuestionId: z.string().min(1).optional(),
+  limit: z.number().int().positive().optional()
+});
+
 export const questionBatchSchema = z.object({
   id: z.string().min(1),
   type: z.literal("question_batch"),
@@ -20,6 +31,7 @@ export const questionBatchSchema = z.object({
   objective: z.string().min(1),
   intendedOutput: z.string().min(1).optional(),
   questionFamilies: z.array(z.string().min(1)).default([]),
+  planningScope: planningScopeSchema.optional(),
   createdAt: z.string().datetime(),
   questions: z.array(plannedQuestionSchema).min(1)
 });
@@ -57,6 +69,8 @@ export const runIndexSchema = z.object({
   attachedChromeTargetId: z.string().min(1).optional(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
+  planningScope: planningScopeSchema.optional(),
+  executionScope: executionScopeSchema.optional(),
   completedQuestionIds: z.array(z.string().min(1)).default([]),
   failedQuestionId: z.string().min(1).optional(),
   failureReason: z.string().min(1).optional(),
@@ -75,6 +89,8 @@ export const outputArtifactSchema = z.object({
 
 export type CitationReference = z.infer<typeof citationReferenceSchema>;
 export type PlannedQuestion = z.infer<typeof plannedQuestionSchema>;
+export type PlanningScope = z.infer<typeof planningScopeSchema>;
+export type ExecutionScope = z.infer<typeof executionScopeSchema>;
 export type QuestionBatch = z.infer<typeof questionBatchSchema>;
 export type QAExchange = z.infer<typeof qaExchangeSchema>;
 export type QARunIndex = z.infer<typeof runIndexSchema>;

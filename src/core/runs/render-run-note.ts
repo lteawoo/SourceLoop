@@ -58,6 +58,8 @@ export function buildRunIndexMarkdown(input: BuildRunIndexMarkdownInput): string
   const attachTargetLine = attachTarget
     ? toWikiLink(workspace, getChromeTargetNote(workspace, attachTarget).absolutePath, normalizeObsidianText(attachTarget.name, attachTarget.id))
     : run.attachedChromeTargetId ?? binding.attachTargetId ?? "none";
+  const planningScope = describePlanningScope(batch);
+  const executionScope = describeExecutionScope(run);
 
   return toFrontmatterMarkdown(
     {
@@ -68,6 +70,11 @@ export function buildRunIndexMarkdown(input: BuildRunIndexMarkdownInput): string
       topic: topicTitle,
       status: run.status,
       ...(run.executionMode ? { mode: run.executionMode } : {}),
+      ...(run.planningScope?.maxQuestions ? { max_questions: String(run.planningScope.maxQuestions) } : {}),
+      ...(run.planningScope?.selectedFamilies ? { selected_families: run.planningScope.selectedFamilies } : {}),
+      ...(run.executionScope?.questionIds ? { selected_question_ids: run.executionScope.questionIds } : {}),
+      ...(run.executionScope?.fromQuestionId ? { from_question: run.executionScope.fromQuestionId } : {}),
+      ...(run.executionScope?.limit ? { execution_limit: String(run.executionScope.limit) } : {}),
       created: run.createdAt,
       updated: run.updatedAt
     },
@@ -95,6 +102,8 @@ export function buildRunIndexMarkdown(input: BuildRunIndexMarkdownInput): string
 - Notebook: ${toWikiLink(workspace, notebookNote.absolutePath, notebookNote.title)}
 - Attach Target: ${attachTargetLine}
 - Questions: ${toWikiLink(workspace, questionsNote.absolutePath, questionsNote.title)}
+- Planning Scope: ${planningScope}
+- Execution Scope: ${executionScope}
 
 ## Progress
 
@@ -108,4 +117,29 @@ ${completedExchangeLines}
 ## Outputs
 ${outputLines}`
   );
+}
+
+function describePlanningScope(batch: QuestionBatch): string {
+  const parts: string[] = [];
+  if (batch.planningScope?.maxQuestions !== undefined) {
+    parts.push(`max ${batch.planningScope.maxQuestions} questions`);
+  }
+  if (batch.planningScope?.selectedFamilies?.length) {
+    parts.push(`families: ${batch.planningScope.selectedFamilies.join(", ")}`);
+  }
+  return parts.length ? parts.join(" | ") : "default planner scope";
+}
+
+function describeExecutionScope(run: QARunIndex): string {
+  const parts: string[] = [];
+  if (run.executionScope?.questionIds?.length) {
+    parts.push(`questions: ${run.executionScope.questionIds.join(", ")}`);
+  }
+  if (run.executionScope?.fromQuestionId) {
+    parts.push(`from: ${run.executionScope.fromQuestionId}`);
+  }
+  if (run.executionScope?.limit !== undefined) {
+    parts.push(`limit: ${run.executionScope.limit}`);
+  }
+  return parts.length ? parts.join(" | ") : "remaining planned questions";
 }

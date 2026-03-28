@@ -12,6 +12,9 @@ export const runCommand = new Command("run")
   .option("--adapter <adapter>", "runner adapter to use", "browser-agent")
   .option("--attach-target <target-id>", "attached Chrome target to use for NotebookLM execution")
   .option("--fixture-file <path>", "fixture response file for local verification")
+  .option("--question-id <question-id>", "explicit planned question id to execute", collectCsvValues, [])
+  .option("--from-question <question-id>", "start execution from this planned question id")
+  .option("--limit <count>", "execute at most this many new questions", parsePositiveInteger)
   .option("--show-browser", "show the browser while the browser-agent adapter runs", false)
   .action(
     async (
@@ -20,11 +23,17 @@ export const runCommand = new Command("run")
         adapter: "browser-agent" | "fixture";
         attachTarget?: string;
         fixtureFile?: string;
+        questionId: string[];
+        fromQuestion?: string;
+        limit?: number;
         showBrowser: boolean;
       }
     ) => {
       if (options.adapter === "fixture" && !options.fixtureFile) {
         throw new Error("--fixture-file is required when --adapter fixture is used.");
+      }
+      if (options.questionId.length > 0 && options.fromQuestion) {
+        throw new Error("--question-id and --from-question cannot be used together.");
       }
 
       const adapter =
@@ -34,7 +43,10 @@ export const runCommand = new Command("run")
 
       const result = await executeQARun({
         runId,
-        adapter
+        adapter,
+        ...(options.questionId.length ? { questionIds: options.questionId } : {}),
+        ...(options.fromQuestion ? { fromQuestionId: options.fromQuestion } : {}),
+        ...(options.limit !== undefined ? { limit: options.limit } : {})
       });
 
       process.stdout.write(
@@ -42,6 +54,24 @@ export const runCommand = new Command("run")
       );
     }
   );
+
+function parsePositiveInteger(value: string): number {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`Expected a positive integer, received "${value}".`);
+  }
+  return parsed;
+}
+
+function collectCsvValues(value: string, previous: string[]): string[] {
+  return [
+    ...previous,
+    ...value
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean)
+  ];
+}
 
 async function createAttachedBrowserAdapter(
   runId: string,

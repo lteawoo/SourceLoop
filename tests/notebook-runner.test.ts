@@ -13,6 +13,7 @@ import { createTopic, loadTopic } from "../src/core/topics/manage-topics.js";
 import { initializeWorkspace } from "../src/core/workspace/init-workspace.js";
 import { ingestSource } from "../src/core/ingest/ingest-source.js";
 import { resolvePlanInput } from "../src/commands/plan.js";
+import { runCommand } from "../src/commands/run.js";
 import { getExchangeNote } from "../src/core/vault/notes.js";
 import { loadWorkspace } from "../src/core/workspace/load-workspace.js";
 
@@ -187,6 +188,44 @@ describe("NotebookLM QA run archive", () => {
     expect(refreshed.corpus.runIds).toContain(plan.run.id);
   });
 
+  it("supports bounded planning and family-filter planning", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
+    await initializeWorkspace({ directory: workspaceRoot, force: false });
+
+    const binding = await bindNotebook({
+      cwd: workspaceRoot,
+      name: "Planning Control Notebook",
+      topic: "planning-controls",
+      notebookUrl: "https://notebooklm.google.com/notebook/planning-controls",
+      accessMode: "owner"
+    });
+
+    const plan = await createQuestionPlan({
+      cwd: workspaceRoot,
+      topic: "planning controls",
+      notebookBindingId: binding.binding.id,
+      maxQuestions: 3,
+      families: ["core", "execution"]
+    });
+
+    const runMarkdown = await readFile(plan.runMarkdownPath, "utf8");
+    const questionsMarkdown = await readFile(plan.questionsMarkdownPath, "utf8");
+
+    expect(plan.batch.questions).toHaveLength(3);
+    expect(plan.batch.questions.every((question) => ["core", "execution"].includes(question.kind))).toBe(true);
+    expect(plan.batch.planningScope).toEqual({
+      maxQuestions: 3,
+      selectedFamilies: ["core", "execution"]
+    });
+    expect(plan.run.planningScope).toEqual({
+      maxQuestions: 3,
+      selectedFamilies: ["core", "execution"]
+    });
+    expect(runMarkdown).toContain("Planning Scope: max 3 questions | families: core, execution");
+    expect(questionsMarkdown).toContain("max_questions: 3");
+    expect(questionsMarkdown).toContain("selected_families:");
+  });
+
   it("fails topic-first runs before execution when the topic corpus and notebook binding are misaligned", async () => {
     const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
     await initializeWorkspace({ directory: workspaceRoot, force: false });
@@ -256,6 +295,140 @@ describe("NotebookLM QA run archive", () => {
       topic: "topic-market-map",
       notebookBindingId: "notebook-legacy-notebook"
     });
+  });
+
+  it("supports targeted and limited run execution scopes", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
+    await initializeWorkspace({ directory: workspaceRoot, force: false });
+
+    const binding = await bindNotebook({
+      cwd: workspaceRoot,
+      name: "Run Control Notebook",
+      topic: "run-controls",
+      notebookUrl: "https://notebooklm.google.com/notebook/run-controls",
+      accessMode: "owner"
+    });
+
+    const plan = await createQuestionPlan({
+      cwd: workspaceRoot,
+      topic: "run controls",
+      notebookBindingId: binding.binding.id
+    });
+
+    const fixturePath = path.join(workspaceRoot, "run-controls-fixture.json");
+    const fixtureResponses = Object.fromEntries(
+      plan.batch.questions.map((question, index) => [
+        question.id,
+        {
+          answer: `Scoped answer ${index + 1}`,
+          citations: [{ label: `${index + 1}` }]
+        }
+      ])
+    );
+    await writeFile(fixturePath, JSON.stringify(fixtureResponses, null, 2), "utf8");
+
+    const scopedResult = await executeQARun({
+      cwd: workspaceRoot,
+      runId: plan.run.id,
+      adapter: await FixtureNotebookRunnerAdapter.fromFile(fixturePath),
+      fromQuestionId: plan.batch.questions[2]!.id,
+      limit: 2
+    });
+
+    expect(scopedResult.run.status).toBe("running");
+    expect(scopedResult.completedExchanges).toHaveLength(2);
+    expect(scopedResult.run.executionScope).toEqual({
+      fromQuestionId: plan.batch.questions[2]!.id,
+      limit: 2
+    });
+    expect(new Set(scopedResult.run.completedQuestionIds)).toEqual(
+      new Set([plan.batch.questions[2]!.id, plan.batch.questions[3]!.id])
+    );
+
+    const targetedResult = await executeQARun({
+      cwd: workspaceRoot,
+      runId: plan.run.id,
+      adapter: await FixtureNotebookRunnerAdapter.fromFile(fixturePath),
+      questionIds: [plan.batch.questions[1]!.id, plan.batch.questions[6]!.id]
+    });
+
+    expect(targetedResult.run.status).toBe("running");
+    expect(targetedResult.run.executionScope).toEqual({
+      questionIds: [plan.batch.questions[1]!.id, plan.batch.questions[6]!.id]
+    });
+    expect(new Set(targetedResult.run.completedQuestionIds)).toEqual(
+      new Set([
+        plan.batch.questions[2]!.id,
+        plan.batch.questions[3]!.id,
+        plan.batch.questions[1]!.id,
+        plan.batch.questions[6]!.id
+      ])
+    );
+
+    const runMarkdown = await readFile(plan.runMarkdownPath, "utf8");
+    expect(runMarkdown).toContain(`Execution Scope: questions: ${plan.batch.questions[1]!.id}, ${plan.batch.questions[6]!.id}`);
+  });
+
+  it("clears stale execution scope when a later run executes with default remaining-question behavior", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
+    await initializeWorkspace({ directory: workspaceRoot, force: false });
+
+    const binding = await bindNotebook({
+      cwd: workspaceRoot,
+      name: "Execution Scope Reset Notebook",
+      topic: "execution-scope-reset",
+      notebookUrl: "https://notebooklm.google.com/notebook/execution-scope-reset",
+      accessMode: "owner"
+    });
+
+    const plan = await createQuestionPlan({
+      cwd: workspaceRoot,
+      topic: "execution scope reset",
+      notebookBindingId: binding.binding.id
+    });
+
+    const fixturePath = path.join(workspaceRoot, "execution-scope-reset-fixture.json");
+    const fixtureResponses = Object.fromEntries(
+      plan.batch.questions.map((question, index) => [
+        question.id,
+        {
+          answer: `Reset answer ${index + 1}`,
+          citations: [{ label: `${index + 1}` }]
+        }
+      ])
+    );
+    await writeFile(fixturePath, JSON.stringify(fixtureResponses, null, 2), "utf8");
+
+    const firstPass = await executeQARun({
+      cwd: workspaceRoot,
+      runId: plan.run.id,
+      adapter: await FixtureNotebookRunnerAdapter.fromFile(fixturePath),
+      fromQuestionId: plan.batch.questions[2]!.id,
+      limit: 2
+    });
+    expect(firstPass.run.executionScope).toEqual({
+      fromQuestionId: plan.batch.questions[2]!.id,
+      limit: 2
+    });
+
+    const secondPass = await executeQARun({
+      cwd: workspaceRoot,
+      runId: plan.run.id,
+      adapter: await FixtureNotebookRunnerAdapter.fromFile(fixturePath)
+    });
+
+    expect(secondPass.run.executionScope).toBeUndefined();
+    const runMarkdown = await readFile(plan.runMarkdownPath, "utf8");
+    expect(runMarkdown).toContain("Execution Scope: remaining planned questions");
+  });
+
+  it("rejects conflicting run selector options", async () => {
+    runCommand.exitOverride();
+    await expect(
+      runCommand.parseAsync(["run-id", "--question-id", "q01", "--from-question", "q02"], {
+        from: "user"
+      })
+    ).rejects.toThrow(/cannot be used together/i);
   });
 
   it("still creates a plan when the bound attach target artifact is missing", async () => {

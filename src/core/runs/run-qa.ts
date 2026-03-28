@@ -4,7 +4,15 @@ import { getRunPaths } from "../vault/paths.js";
 import { loadNotebookBinding, loadQuestionBatch, loadRunExchanges } from "./load-artifacts.js";
 import type { NotebookRunnerAdapter } from "../notebooklm/adapter.js";
 import type { NotebookRunnerAnswer } from "../notebooklm/adapter.js";
-import { qaExchangeSchema, runIndexSchema, type QAExchange, type QARunIndex, type QuestionBatch } from "../../schemas/run.js";
+import {
+  executionScopeSchema,
+  qaExchangeSchema,
+  runIndexSchema,
+  type ExecutionScope,
+  type QAExchange,
+  type QARunIndex,
+  type QuestionBatch
+} from "../../schemas/run.js";
 import { toFrontmatterMarkdown } from "../ingest/frontmatter.js";
 import { writeJsonFile } from "../../lib/write-json.js";
 import { loadTopic, refreshTopicArtifacts } from "../topics/manage-topics.js";
@@ -16,6 +24,9 @@ import { buildRunIndexMarkdown } from "./render-run-note.js";
 export type ExecuteQARunInput = {
   runId: string;
   adapter: NotebookRunnerAdapter;
+  questionIds?: string[];
+  fromQuestionId?: string;
+  limit?: number;
   cwd?: string;
 };
 
@@ -46,8 +57,11 @@ export async function executeQARun(input: ExecuteQARunInput): Promise<ExecuteQAR
 
   const existingExchanges = await loadRunExchanges(run.id, input.cwd);
   const completed = new Map(existingExchanges.map((exchange) => [exchange.questionId, exchange]));
+  const executionScope = normalizeExecutionScope(input);
+  const questionsToExecute = resolveQuestionsToExecute(batch, completed, executionScope);
   let currentRun = runIndexSchema.parse({
     ...run,
+    executionScope,
     completedQuestionIds: [...new Set([...run.completedQuestionIds, ...completed.keys()])]
   });
 
@@ -72,6 +86,7 @@ export async function executeQARun(input: ExecuteQARunInput): Promise<ExecuteQAR
         ...currentRun,
         executionMode: executionMetadata?.executionMode ?? currentRun.executionMode,
         attachedChromeTargetId: executionMetadata?.attachedChromeTargetId ?? currentRun.attachedChromeTargetId,
+        executionScope,
         failureReason: undefined
       }),
       "running"
@@ -91,11 +106,7 @@ export async function executeQARun(input: ExecuteQARunInput): Promise<ExecuteQAR
   }
 
   try {
-    for (const question of batch.questions) {
-      if (completed.has(question.id)) {
-        continue;
-      }
-
+    for (const question of questionsToExecute) {
       try {
         const answer = await input.adapter.askQuestion(binding, question);
         const exchange = await writeExchangeArtifact({
@@ -138,9 +149,10 @@ export async function executeQARun(input: ExecuteQARunInput): Promise<ExecuteQAR
       }
     }
 
+    const allQuestionsCompleted = batch.questions.every((plannedQuestion) => completed.has(plannedQuestion.id));
     currentRun = runIndexSchema.parse({
       ...currentRun,
-      status: "completed",
+      status: allQuestionsCompleted ? "completed" : "running",
       updatedAt: new Date().toISOString(),
       completedQuestionIds: [...completed.keys()],
       failedQuestionId: undefined,
@@ -245,6 +257,52 @@ function updateRunStatus(run: QARunIndex, status: QARunIndex["status"]): QARunIn
     status,
     updatedAt: new Date().toISOString()
   });
+}
+
+function normalizeExecutionScope(input: ExecuteQARunInput): ExecutionScope | undefined {
+  if (!input.questionIds?.length && !input.fromQuestionId && input.limit === undefined) {
+    return undefined;
+  }
+
+  return executionScopeSchema.parse({
+    ...(input.questionIds?.length ? { questionIds: [...new Set(input.questionIds)] } : {}),
+    ...(input.fromQuestionId ? { fromQuestionId: input.fromQuestionId } : {}),
+    ...(input.limit !== undefined ? { limit: input.limit } : {})
+  });
+}
+
+function resolveQuestionsToExecute(
+  batch: QuestionBatch,
+  completed: Map<string, QAExchange>,
+  executionScope?: ExecutionScope
+) {
+  const explicitIds = executionScope?.questionIds;
+  if (explicitIds?.length) {
+    const byId = new Map(batch.questions.map((question) => [question.id, question]));
+    const resolved = explicitIds.map((questionId) => {
+      const question = byId.get(questionId);
+      if (!question) {
+        throw new Error(`Question ${questionId} does not exist in run ${batch.id}.`);
+      }
+      if (completed.has(questionId)) {
+        throw new Error(`Question ${questionId} already has an archived answer. Replay is not supported yet.`);
+      }
+      return question;
+    });
+    return executionScope?.limit !== undefined ? resolved.slice(0, executionScope.limit) : resolved;
+  }
+
+  const startIndex = executionScope?.fromQuestionId
+    ? batch.questions.findIndex((question) => question.id === executionScope.fromQuestionId)
+    : 0;
+  if (executionScope?.fromQuestionId && startIndex === -1) {
+    throw new Error(`Question ${executionScope.fromQuestionId} does not exist in run ${batch.id}.`);
+  }
+
+  const remaining = batch.questions
+    .slice(startIndex)
+    .filter((question) => !completed.has(question.id));
+  return executionScope?.limit !== undefined ? remaining.slice(0, executionScope.limit) : remaining;
 }
 
 function resolveImportQuestion(
