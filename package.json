@@ -2,16 +2,30 @@
   "name": "sourceloop",
   "version": "0.1.0",
   "description": "NotebookLM-centered research orchestration pipeline",
+  "license": "MIT",
   "type": "module",
   "bin": {
     "sourceloop": "./dist/index.js"
   },
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "clean": "rm -rf dist coverage",
     "dev": "tsx src/index.ts",
+    "prepack": "pnpm build",
     "test": "vitest run",
     "test:watch": "vitest"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lteawoo/SourceLoop.git"
+  },
+  "homepage": "https://github.com/lteawoo/SourceLoop#readme",
+  "bugs": {
+    "url": "https://github.com/lteawoo/SourceLoop/issues"
   },
   "engines": {
     "node": ">=24"

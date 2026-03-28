@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { initCommand } from "../src/commands/init.js";
 import { initializeWorkspace } from "../src/core/workspace/init-workspace.js";
 import { loadWorkspace } from "../src/core/workspace/load-workspace.js";
+import type { SupportedAgentBootstrap } from "../src/core/workspace/bootstrap.js";
 
 describe("initializeWorkspace", () => {
   afterEach(() => {
@@ -85,6 +86,40 @@ describe("initializeWorkspace", () => {
     expect(playbookReference).toContain("let that command complete before asking whether to continue");
   });
 
+  for (const ai of ["claude", "gemini"] as const) {
+    it(`supports current-directory initialization and ${ai} bootstrap generation`, async () => {
+      const tempRoot = await mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
+      process.chdir(tempRoot);
+
+      const output = await captureStdout(() => initCommand.parseAsync(["--ai", ai, "--json"], { from: "user" }));
+      const result = JSON.parse(output) as {
+        rootDir: string;
+        bootstrap?: { ai: string; created: string[] };
+      };
+
+      expect(await realpath(result.rootDir)).toBe(await realpath(tempRoot));
+      expect(result.bootstrap).toMatchObject({
+        ai
+      });
+
+      const skillMarkdown = await readFile(
+        path.join(tempRoot, getSkillRelativePath(ai), "SKILL.md"),
+        "utf8"
+      );
+      const playbookReference = await readFile(
+        path.join(tempRoot, getSkillRelativePath(ai), "references/playbook.md"),
+        "utf8"
+      );
+
+      expect(skillMarkdown).toContain("name: sourceloop-operator");
+      expect(skillMarkdown).toContain("sourceloop status --json");
+      expect(skillMarkdown).toContain("sourceloop doctor --json");
+      expect(skillMarkdown).toContain("sourceloop chrome launch");
+      expect(skillMarkdown).toContain("sourceloop run ... --json");
+      expect(playbookReference).toContain("# SourceLoop Operator Playbook");
+    });
+  }
+
   it("adds Codex bootstrap to an existing workspace without rewriting config", async () => {
     const tempRoot = await mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
 
@@ -108,6 +143,32 @@ describe("initializeWorkspace", () => {
       "name: sourceloop-operator"
     );
   });
+
+  for (const ai of ["claude", "gemini"] as const) {
+    it(`adds ${ai} bootstrap to an existing workspace without rewriting config`, async () => {
+      const tempRoot = await mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
+
+      await initializeWorkspace({
+        directory: tempRoot,
+        force: false
+      });
+
+      const configPath = path.join(tempRoot, ".sourceloop/config.json");
+      const originalConfig = await readFile(configPath, "utf8");
+
+      const result = await initializeWorkspace({
+        directory: tempRoot,
+        force: false,
+        ai
+      });
+
+      expect(result.bootstrap?.ai).toBe(ai);
+      expect(await readFile(configPath, "utf8")).toBe(originalConfig);
+      expect(await readFile(path.join(tempRoot, getSkillRelativePath(ai), "SKILL.md"), "utf8")).toContain(
+        "name: sourceloop-operator"
+      );
+    });
+  }
 
   it("overwrites the generated Codex scaffold only when forced", async () => {
     const tempRoot = await mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
@@ -142,6 +203,42 @@ describe("initializeWorkspace", () => {
     await expect(readFile(stalePath, "utf8")).rejects.toThrow();
   });
 
+  for (const ai of ["claude", "gemini"] as const) {
+    it(`overwrites the generated ${ai} scaffold only when forced`, async () => {
+      const tempRoot = await mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
+
+      await initializeWorkspace({
+        directory: tempRoot,
+        force: false,
+        ai
+      });
+
+      const skillDir = path.join(tempRoot, getSkillRelativePath(ai));
+      const skillPath = path.join(skillDir, "SKILL.md");
+      const stalePath = path.join(skillDir, "stale.txt");
+      await writeFile(skillPath, "stale bootstrap", "utf8");
+      await writeFile(stalePath, "stale file", "utf8");
+
+      await expect(
+        initializeWorkspace({
+          directory: tempRoot,
+          force: false,
+          ai
+        })
+      ).rejects.toThrow(new RegExp(`${ai}`, "i"));
+
+      const forced = await initializeWorkspace({
+        directory: tempRoot,
+        force: true,
+        ai
+      });
+
+      expect(forced.bootstrap?.ai).toBe(ai);
+      expect(await readFile(skillPath, "utf8")).toContain("name: sourceloop-operator");
+      await expect(readFile(stalePath, "utf8")).rejects.toThrow();
+    });
+  }
+
   it("fails before writing config when a conflicting Codex scaffold already exists", async () => {
     const tempRoot = await mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
     await mkdir(path.join(tempRoot, ".codex/skills/sourceloop-operator"), { recursive: true });
@@ -157,6 +254,24 @@ describe("initializeWorkspace", () => {
 
     await expect(readFile(path.join(tempRoot, ".sourceloop/config.json"), "utf8")).rejects.toThrow();
   });
+
+  for (const ai of ["claude", "gemini"] as const) {
+    it(`fails before writing config when a conflicting ${ai} scaffold already exists`, async () => {
+      const tempRoot = await mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
+      await mkdir(path.join(tempRoot, getSkillRelativePath(ai)), { recursive: true });
+      await writeFile(path.join(tempRoot, getSkillRelativePath(ai), "SKILL.md"), "existing", "utf8");
+
+      await expect(
+        initializeWorkspace({
+          directory: tempRoot,
+          force: false,
+          ai
+        })
+      ).rejects.toThrow(new RegExp(`${ai}`, "i"));
+
+      await expect(readFile(path.join(tempRoot, ".sourceloop/config.json"), "utf8")).rejects.toThrow();
+    });
+  }
 
   it("loads legacy workspace configs that do not yet include chromeTargets", async () => {
     const tempRoot = await mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
@@ -209,4 +324,10 @@ async function captureStdout(fn: () => Promise<void>): Promise<string> {
   }
 
   return output;
+}
+
+function getSkillRelativePath(ai: Exclude<SupportedAgentBootstrap, "codex">): string {
+  return ai === "claude"
+    ? ".claude/skills/sourceloop-operator"
+    : ".agents/skills/sourceloop-operator";
 }

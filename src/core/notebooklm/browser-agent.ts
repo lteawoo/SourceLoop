@@ -203,13 +203,13 @@ export async function disposeNotebookBrowserSessionResources(input: {
   closePage: () => Promise<unknown>;
   closeBrowserConnection: () => Promise<unknown>;
   ownsBrowserProcess: boolean;
-  killSpawnedProcess?: () => void;
+  killSpawnedProcess?: () => Promise<void> | void;
 }): Promise<void> {
   await input.closePage().catch(() => undefined);
   await input.closeBrowserConnection().catch(() => undefined);
 
   if (input.ownsBrowserProcess) {
-    input.killSpawnedProcess?.();
+    await input.killSpawnedProcess?.();
   }
 }
 
@@ -443,8 +443,8 @@ async function createPlaywrightNotebookBrowserSession(input: {
     async close(): Promise<void> {
       const spawnedProcess = state.spawnedProcess;
       const killSpawnedProcess = spawnedProcess
-        ? () => {
-            spawnedProcess.kill("SIGTERM");
+        ? async () => {
+            await terminateSpawnedChromeProcess(spawnedProcess);
           }
         : undefined;
       await disposeNotebookBrowserSessionResources({
@@ -575,6 +575,62 @@ async function launchProfileChrome(
       `Could not launch Chrome from profile ${target.profileDirPath}: ${formatError(error)}`
     );
   }
+}
+
+const GRACEFUL_CHROME_SHUTDOWN_TIMEOUT_MS = 5_000;
+const FORCEFUL_CHROME_SHUTDOWN_TIMEOUT_MS = 2_000;
+
+async function terminateSpawnedChromeProcess(spawnedProcess: ChildProcess): Promise<void> {
+  if (spawnedProcess.exitCode !== null || spawnedProcess.signalCode !== null) {
+    return;
+  }
+
+  const exitPromise = waitForChildProcessExit(spawnedProcess);
+  const terminatedGracefully = requestChildProcessSignal(spawnedProcess, "SIGTERM");
+  if (!terminatedGracefully && spawnedProcess.exitCode === null && spawnedProcess.signalCode === null) {
+    return;
+  }
+
+  if (await waitForChildProcessExitWithin(exitPromise, GRACEFUL_CHROME_SHUTDOWN_TIMEOUT_MS)) {
+    return;
+  }
+
+  requestChildProcessSignal(spawnedProcess, "SIGKILL");
+  await waitForChildProcessExitWithin(exitPromise, FORCEFUL_CHROME_SHUTDOWN_TIMEOUT_MS);
+}
+
+function requestChildProcessSignal(spawnedProcess: ChildProcess, signal: NodeJS.Signals): boolean {
+  try {
+    return spawnedProcess.kill(signal);
+  } catch {
+    return false;
+  }
+}
+
+function waitForChildProcessExit(spawnedProcess: ChildProcess): Promise<void> {
+  if (spawnedProcess.exitCode !== null || spawnedProcess.signalCode !== null) {
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve) => {
+    const finalize = () => {
+      spawnedProcess.off("close", finalize);
+      spawnedProcess.off("exit", finalize);
+      spawnedProcess.off("error", finalize);
+      resolve();
+    };
+
+    spawnedProcess.once("close", finalize);
+    spawnedProcess.once("exit", finalize);
+    spawnedProcess.once("error", finalize);
+  });
+}
+
+async function waitForChildProcessExitWithin(exitPromise: Promise<void>, timeoutMs: number): Promise<boolean> {
+  return Promise.race([
+    exitPromise.then(() => true),
+    sleep(timeoutMs).then(() => false)
+  ]);
 }
 
 export async function resolveChromeExecutablePath(customPath?: string): Promise<string> {

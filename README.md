@@ -97,7 +97,7 @@ SourceLoop uses NotebookLM as the answer engine because NotebookLM is already st
 SourceLoop does not try to replace those strengths. It makes them operational for AI tools.
 
 ## Markdown-First Output
-
+![alt text](docs/graph-sample.png)
 SourceLoop is designed so the result does not disappear into a browser tab.
 
 Every run is captured as local Markdown artifacts:
@@ -150,8 +150,10 @@ cd /path/to/your/project
 # Initialize SourceLoop
 sourceloop init
 
-# Install for Codex CLI
+# Install project-local AI bootstrap
 sourceloop init --ai codex
+sourceloop init --ai claude
+sourceloop init --ai gemini
 ```
 
 ## Usage

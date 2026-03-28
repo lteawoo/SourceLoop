@@ -50,6 +50,32 @@ describe("Chrome attach targets", () => {
     expect(processKilled).toBe(false);
   });
 
+  it("waits for owned browser processes to finish shutting down", async () => {
+    const callOrder: string[] = [];
+
+    await disposeNotebookBrowserSessionResources({
+      closePage: async () => {
+        callOrder.push("close-page");
+      },
+      closeBrowserConnection: async () => {
+        callOrder.push("close-browser");
+      },
+      ownsBrowserProcess: true,
+      killSpawnedProcess: async () => {
+        callOrder.push("start-kill");
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        callOrder.push("finish-kill");
+      }
+    });
+
+    expect(callOrder).toEqual([
+      "close-page",
+      "close-browser",
+      "start-kill",
+      "finish-kill"
+    ]);
+  });
+
   it("registers inspectable profile and endpoint attach targets", async () => {
     const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
     await initializeWorkspace({ directory: workspaceRoot, force: false });
