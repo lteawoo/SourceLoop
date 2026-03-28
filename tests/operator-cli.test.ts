@@ -1,0 +1,424 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { doctorCommand } from "../src/commands/doctor.js";
+import { notebookBindCommand } from "../src/commands/notebook-bind.js";
+import { notebookSourceCommand } from "../src/commands/notebook-source.js";
+import { planCommand } from "../src/commands/plan.js";
+import { runCommand } from "../src/commands/run.js";
+import { statusCommand } from "../src/commands/status.js";
+import { topicCommand } from "../src/commands/topic.js";
+import {
+  buildDoctorReport,
+  buildWorkspaceStatusReport,
+  formatDoctorReport,
+  formatWorkspaceStatusReport
+} from "../src/core/operator/workspace-operator.js";
+import { bindNotebook } from "../src/core/notebooks/bind-notebook.js";
+import { declareNotebookSourceManifest } from "../src/core/notebooks/manage-notebook-source-manifests.js";
+import { FixtureNotebookRunnerAdapter } from "../src/core/notebooklm/fixture-adapter.js";
+import { createQuestionPlan } from "../src/core/runs/question-planner.js";
+import { executeQARun } from "../src/core/runs/run-qa.js";
+import { createTopic } from "../src/core/topics/manage-topics.js";
+import { initializeWorkspace } from "../src/core/workspace/init-workspace.js";
+import { ingestSource } from "../src/core/ingest/ingest-source.js";
+
+describe("operator CLI workflow", () => {
+  afterEach(() => {
+    process.chdir("/Users/twlee/projects/SourceLoop");
+  });
+
+  it("reports empty-workspace status with a first next action", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
+    await initializeWorkspace({ directory: workspaceRoot, force: false });
+
+    const report = await buildWorkspaceStatusReport(workspaceRoot);
+    const text = formatWorkspaceStatusReport(report);
+
+    expect(report.summary.topicCount).toBe(0);
+    expect(report.nextActions[0]).toMatchObject({
+      kind: "create_topic"
+    });
+    expect(text).toContain("No active research setup yet.");
+    expect(text).toContain("sourceloop topic create");
+  });
+
+  it("summarizes mixed topic readiness and next actions", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
+    await initializeWorkspace({ directory: workspaceRoot, force: false });
+
+    const topicMissingBinding = await createTopic({
+      cwd: workspaceRoot,
+      name: "Topic without notebook"
+    });
+
+    const topicNeedsPlan = await createTopic({
+      cwd: workspaceRoot,
+      name: "Topic ready for planning"
+    });
+    const readyBinding = await bindNotebook({
+      cwd: workspaceRoot,
+      name: "Ready Notebook",
+      topic: topicNeedsPlan.topic.name,
+      topicId: topicNeedsPlan.topic.id,
+      notebookUrl: "https://notebooklm.google.com/notebook/ready",
+      accessMode: "owner"
+    });
+    await declareNotebookSourceManifest({
+      cwd: workspaceRoot,
+      topicId: topicNeedsPlan.topic.id,
+      notebookBindingId: readyBinding.binding.id,
+      kind: "document-set",
+      title: "Ready source set"
+    });
+
+    const topicIncompleteRun = await createTopic({
+      cwd: workspaceRoot,
+      name: "Topic with incomplete run"
+    });
+    const sourcePath = path.join(workspaceRoot, "incomplete-source.md");
+    await writeFile(sourcePath, "Source for incomplete run", "utf8");
+    await ingestSource({
+      cwd: workspaceRoot,
+      input: sourcePath,
+      topicId: topicIncompleteRun.topic.id
+    });
+    const incompleteBinding = await bindNotebook({
+      cwd: workspaceRoot,
+      name: "Incomplete Notebook",
+      topic: topicIncompleteRun.topic.name,
+      topicId: topicIncompleteRun.topic.id,
+      notebookUrl: "https://notebooklm.google.com/notebook/incomplete",
+      accessMode: "owner"
+    });
+    const incompletePlan = await createQuestionPlan({
+      cwd: workspaceRoot,
+      topicId: topicIncompleteRun.topic.id,
+      notebookBindingId: incompleteBinding.binding.id,
+      maxQuestions: 1
+    });
+    const emptyFixturePath = path.join(workspaceRoot, "incomplete-fixture.json");
+    await writeFile(emptyFixturePath, JSON.stringify({}, null, 2), "utf8");
+    await executeQARun({
+      cwd: workspaceRoot,
+      runId: incompletePlan.run.id,
+      adapter: await FixtureNotebookRunnerAdapter.fromFile(emptyFixturePath)
+    });
+
+    const report = await buildWorkspaceStatusReport(workspaceRoot);
+    const text = formatWorkspaceStatusReport(report);
+
+    expect(report.topics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: topicMissingBinding.topic.id, status: "initialized" }),
+        expect.objectContaining({ id: topicNeedsPlan.topic.id, status: "ready_for_planning" }),
+        expect.objectContaining({ id: topicIncompleteRun.topic.id, status: "researched" })
+      ])
+    );
+    expect(report.nextActions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: "bind_notebook", topicId: topicMissingBinding.topic.id }),
+        expect.objectContaining({ kind: "plan_questions", topicId: topicNeedsPlan.topic.id }),
+        expect.objectContaining({ kind: "resume_run", runId: incompletePlan.run.id })
+      ])
+    );
+    expect(text).toContain("Next Actions");
+    expect(text).toContain(incompletePlan.run.id);
+  });
+
+  it("diagnoses missing bindings, missing evidence, and incomplete runs", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
+    await initializeWorkspace({ directory: workspaceRoot, force: false });
+
+    const topicMissingBinding = await createTopic({
+      cwd: workspaceRoot,
+      name: "Doctor missing binding"
+    });
+
+    const topicMissingEvidence = await createTopic({
+      cwd: workspaceRoot,
+      name: "Doctor missing evidence"
+    });
+    await bindNotebook({
+      cwd: workspaceRoot,
+      name: "Evidence Notebook",
+      topic: topicMissingEvidence.topic.name,
+      topicId: topicMissingEvidence.topic.id,
+      notebookUrl: "https://notebooklm.google.com/notebook/missing-evidence",
+      accessMode: "owner"
+    });
+
+    const topicIncompleteRun = await createTopic({
+      cwd: workspaceRoot,
+      name: "Doctor incomplete run"
+    });
+    const sourcePath = path.join(workspaceRoot, "doctor-run-source.md");
+    await writeFile(sourcePath, "Source for doctor run", "utf8");
+    await ingestSource({
+      cwd: workspaceRoot,
+      input: sourcePath,
+      topicId: topicIncompleteRun.topic.id
+    });
+    const runBinding = await bindNotebook({
+      cwd: workspaceRoot,
+      name: "Doctor Run Notebook",
+      topic: topicIncompleteRun.topic.name,
+      topicId: topicIncompleteRun.topic.id,
+      notebookUrl: "https://notebooklm.google.com/notebook/doctor-run",
+      accessMode: "owner"
+    });
+    const plan = await createQuestionPlan({
+      cwd: workspaceRoot,
+      topicId: topicIncompleteRun.topic.id,
+      notebookBindingId: runBinding.binding.id,
+      maxQuestions: 1
+    });
+    const emptyFixturePath = path.join(workspaceRoot, "doctor-incomplete-fixture.json");
+    await writeFile(emptyFixturePath, JSON.stringify({}, null, 2), "utf8");
+    await executeQARun({
+      cwd: workspaceRoot,
+      runId: plan.run.id,
+      adapter: await FixtureNotebookRunnerAdapter.fromFile(emptyFixturePath)
+    });
+
+    const report = await buildDoctorReport(workspaceRoot);
+    const text = formatDoctorReport(report);
+
+    expect(report.findings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ category: "topic", topicId: topicMissingBinding.topic.id }),
+        expect.objectContaining({ category: "evidence", topicId: topicMissingEvidence.topic.id, severity: "error" }),
+        expect.objectContaining({ category: "run", runId: plan.run.id, severity: "warning" })
+      ])
+    );
+    expect(text).toContain("Doctor Findings");
+    expect(text).toContain("sourceloop run");
+  });
+
+  it("treats evidence readiness as binding-specific for status and doctor", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
+    await initializeWorkspace({ directory: workspaceRoot, force: false });
+
+    const topic = await createTopic({
+      cwd: workspaceRoot,
+      name: "Binding specific evidence topic"
+    });
+
+    const readyBinding = await bindNotebook({
+      cwd: workspaceRoot,
+      name: "Ready Binding",
+      topic: topic.topic.name,
+      topicId: topic.topic.id,
+      notebookUrl: "https://notebooklm.google.com/notebook/ready-binding",
+      accessMode: "owner"
+    });
+    const missingBinding = await bindNotebook({
+      cwd: workspaceRoot,
+      name: "Missing Evidence Binding",
+      topic: topic.topic.name,
+      topicId: topic.topic.id,
+      notebookUrl: "https://notebooklm.google.com/notebook/missing-binding",
+      accessMode: "owner"
+    });
+
+    await declareNotebookSourceManifest({
+      cwd: workspaceRoot,
+      topicId: topic.topic.id,
+      notebookBindingId: readyBinding.binding.id,
+      kind: "document-set",
+      title: "Only ready binding evidence"
+    });
+
+    const statusReport = await buildWorkspaceStatusReport(workspaceRoot);
+    const doctorReport = await buildDoctorReport(workspaceRoot);
+
+    expect(statusReport.summary.notebookEvidenceCount).toBe(1);
+    expect(statusReport.nextActions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "declare_evidence",
+          topicId: topic.topic.id,
+          notebookBindingId: missingBinding.binding.id
+        })
+      ])
+    );
+    expect(statusReport.nextActions).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "run_planned",
+          notebookBindingId: missingBinding.binding.id
+        })
+      ])
+    );
+    expect(doctorReport.findings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          category: "evidence",
+          topicId: topic.topic.id,
+          notebookBindingId: missingBinding.binding.id,
+          severity: "error"
+        })
+      ])
+    );
+  });
+
+  it("excludes orphan notebook manifests from top-level evidence summary", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
+    await initializeWorkspace({ directory: workspaceRoot, force: false });
+
+    const topic = await createTopic({
+      cwd: workspaceRoot,
+      name: "Orphan manifest topic"
+    });
+
+    const binding = await bindNotebook({
+      cwd: workspaceRoot,
+      name: "Ephemeral Binding",
+      topic: topic.topic.name,
+      topicId: topic.topic.id,
+      notebookUrl: "https://notebooklm.google.com/notebook/ephemeral-binding",
+      accessMode: "owner"
+    });
+
+    await declareNotebookSourceManifest({
+      cwd: workspaceRoot,
+      topicId: topic.topic.id,
+      notebookBindingId: binding.binding.id,
+      kind: "document-set",
+      title: "Ephemeral evidence"
+    });
+
+    await rm(path.join(workspaceRoot, "vault", "notebooks", `${binding.binding.id}.json`), { force: true });
+    await rm(binding.markdownPath, { force: true });
+
+    const statusReport = await buildWorkspaceStatusReport(workspaceRoot);
+    const doctorReport = await buildDoctorReport(workspaceRoot);
+
+    expect(statusReport.summary.notebookEvidenceCount).toBe(0);
+    expect(doctorReport.findings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          category: "binding",
+          notebookBindingId: binding.binding.id,
+          severity: "warning"
+        })
+      ])
+    );
+  });
+
+  it("emits JSON payloads for representative operator commands", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
+    await initializeWorkspace({ directory: workspaceRoot, force: false });
+    process.chdir(workspaceRoot);
+
+    const topicCreateJson = JSON.parse(
+      await captureStdout(() =>
+        topicCommand.parseAsync(["create", "--name", "JSON Topic", "--json"], { from: "user" })
+      )
+    ) as { topic: { id: string } };
+    expect(topicCreateJson.topic.id).toBe("topic-json-topic");
+
+    const notebookBindJson = JSON.parse(
+      await captureStdout(() =>
+        notebookBindCommand.parseAsync(
+          [
+            "--name",
+            "JSON Notebook",
+            "--topic-id",
+            "topic-json-topic",
+            "--url",
+            "https://notebooklm.google.com/notebook/json",
+            "--json"
+          ],
+          { from: "user" }
+        )
+      )
+    ) as { binding: { id: string } };
+    expect(notebookBindJson.binding.id).toBe("notebook-json-notebook");
+
+    const notebookSourceJson = JSON.parse(
+      await captureStdout(() =>
+        notebookSourceCommand.parseAsync(
+          [
+            "declare",
+            "--topic-id",
+            "topic-json-topic",
+            "--notebook",
+            notebookBindJson.binding.id,
+            "--kind",
+            "document-set",
+            "--title",
+            "JSON Source Set",
+            "--json"
+          ],
+          { from: "user" }
+        )
+      )
+    ) as { manifest: { id: string } };
+    expect(notebookSourceJson.manifest.id).toContain("notebook-source-");
+
+    const planJson = JSON.parse(
+      await captureStdout(() =>
+        planCommand.parseAsync(["topic-json-topic", "--max-questions", "1", "--json"], { from: "user" })
+      )
+    ) as { run: { id: string }; batch: { questions: Array<{ id: string }> } };
+    expect(planJson.batch.questions).toHaveLength(1);
+
+    const fixturePath = path.join(workspaceRoot, "json-run-fixture.json");
+    await writeFile(
+      fixturePath,
+      JSON.stringify(
+        {
+          [planJson.batch.questions[0]!.id]: {
+            answer: "JSON answer",
+            citations: [{ label: "1" }]
+          }
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
+
+    const runJson = JSON.parse(
+      await captureStdout(() =>
+        runCommand.parseAsync(
+          [planJson.run.id, "--adapter", "fixture", "--fixture-file", fixturePath, "--json"],
+          { from: "user" }
+        )
+      )
+    ) as { run: { status: string }; completedExchangeCount: number };
+    expect(runJson.run.status).toBe("completed");
+    expect(runJson.completedExchangeCount).toBe(1);
+
+    const statusJson = JSON.parse(
+      await captureStdout(() => statusCommand.parseAsync(["--json"], { from: "user" }))
+    ) as { summary: { topicCount: number }; nextActions: unknown[] };
+    expect(statusJson.summary.topicCount).toBe(1);
+    expect(Array.isArray(statusJson.nextActions)).toBe(true);
+
+    const doctorJson = JSON.parse(
+      await captureStdout(() => doctorCommand.parseAsync(["--json"], { from: "user" }))
+    ) as { findings: unknown[] };
+    expect(Array.isArray(doctorJson.findings)).toBe(true);
+  });
+});
+
+async function captureStdout(fn: () => Promise<void>): Promise<string> {
+  let output = "";
+  const originalWrite = process.stdout.write.bind(process.stdout);
+
+  process.stdout.write = ((chunk: string | Uint8Array) => {
+    output += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
+    return true;
+  }) as typeof process.stdout.write;
+
+  try {
+    await fn();
+  } finally {
+    process.stdout.write = originalWrite;
+  }
+
+  return output;
+}

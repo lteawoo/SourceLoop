@@ -4,6 +4,7 @@ import {
   listNotebookSourceManifests,
   loadNotebookSourceManifest
 } from "../core/notebooks/manage-notebook-source-manifests.js";
+import { writeJsonOutput, writeTextOutput } from "../lib/cli-output.js";
 
 export const notebookSourceCommand = new Command("notebook-source").description(
   "Declare and inspect NotebookLM-backed source manifests"
@@ -20,6 +21,7 @@ notebookSourceCommand
   .option("--item-count <count>", "optional bundle item count", parsePositiveInteger)
   .option("--ref <ref>", "reference URL or note", collectValue, [])
   .option("--force", "overwrite an existing manifest with the same id", false)
+  .option("--json", "emit machine-readable JSON", false)
   .action(
     async (options: {
       topicId: string;
@@ -30,6 +32,7 @@ notebookSourceCommand
       itemCount?: number;
       ref: string[];
       force: boolean;
+      json: boolean;
     }) => {
       const result = await declareNotebookSourceManifest({
         topicId: options.topicId,
@@ -42,21 +45,31 @@ notebookSourceCommand
         force: options.force
       });
 
-      process.stdout.write(`Declared notebook source manifest ${result.manifest.id} at ${result.markdownPath}\n`);
+      if (options.json) {
+        writeJsonOutput(result);
+        return;
+      }
+
+      writeTextOutput(`Declared notebook source manifest ${result.manifest.id} at ${result.markdownPath}`);
     }
   );
 
 notebookSourceCommand
   .command("list")
   .description("List notebook-backed source manifests in the current workspace")
-  .action(async () => {
+  .option("--json", "emit machine-readable JSON", false)
+  .action(async (options: { json: boolean }) => {
     const manifests = await listNotebookSourceManifests();
+    if (options.json) {
+      writeJsonOutput({ manifests });
+      return;
+    }
     if (manifests.length === 0) {
-      process.stdout.write("No notebook source manifests found.\n");
+      writeTextOutput("No notebook source manifests found.");
       return;
     }
     for (const manifest of manifests) {
-      process.stdout.write(`${manifest.id}\t${manifest.topicId}\t${manifest.notebookBindingId}\t${manifest.title}\n`);
+      writeTextOutput(`${manifest.id}\t${manifest.topicId}\t${manifest.notebookBindingId}\t${manifest.title}`);
     }
   });
 
@@ -64,9 +77,10 @@ notebookSourceCommand
   .command("show")
   .description("Show one notebook-backed source manifest")
   .argument("<manifest-id>", "manifest id")
-  .action(async (manifestId: string) => {
+  .option("--json", "emit machine-readable JSON", false)
+  .action(async (manifestId: string, options: { json: boolean }) => {
     const { manifest } = await loadNotebookSourceManifest(manifestId);
-    process.stdout.write(`${JSON.stringify({ manifest }, null, 2)}\n`);
+    writeJsonOutput({ manifest });
   });
 
 function parsePositiveInteger(value: string): number {

@@ -1,0 +1,594 @@
+import { readFile, readdir } from "node:fs/promises";
+import path from "node:path";
+import { listChromeAttachTargets } from "../attach/manage-targets.js";
+import { loadWorkspace, type LoadedWorkspace } from "../workspace/load-workspace.js";
+import { getRunPaths, getVaultPaths } from "../vault/paths.js";
+import { notebookBindingSchema, type NotebookBinding } from "../../schemas/notebook.js";
+import { notebookSourceManifestSchema, type NotebookSourceManifest } from "../../schemas/notebook-source.js";
+import { runIndexSchema, questionBatchSchema, type QARunIndex, type QuestionBatch } from "../../schemas/run.js";
+import { sourceDocumentSchema, type SourceDocument } from "../../schemas/source.js";
+import { type ResearchTopic, type TopicStatus } from "../../schemas/topic.js";
+import { listTopics } from "../topics/manage-topics.js";
+
+export type OperatorNextAction = {
+  kind: "create_topic" | "bind_notebook" | "declare_evidence" | "plan_questions" | "resume_run" | "run_planned";
+  message: string;
+  command: string;
+  topicId?: string;
+  runId?: string;
+  notebookBindingId?: string;
+};
+
+export type TopicStatusSummary = {
+  id: string;
+  name: string;
+  status: TopicStatus;
+  notebookBindingCount: number;
+  localSourceCount: number;
+  notebookEvidenceCount: number;
+  runCount: number;
+  plannedRunCount: number;
+  incompleteRunCount: number;
+  completedRunCount: number;
+};
+
+export type RunStatusSummary = {
+  id: string;
+  topic: string;
+  topicId?: string;
+  notebookBindingId: string;
+  status: QARunIndex["status"];
+  completedQuestionCount: number;
+  totalQuestionCount: number;
+  failedQuestionId?: string;
+  executionMode?: QARunIndex["executionMode"];
+};
+
+export type WorkspaceStatusReport = {
+  workspaceRoot: string;
+  summary: {
+    topicCount: number;
+    notebookBindingCount: number;
+    localSourceCount: number;
+    notebookEvidenceCount: number;
+    attachTargetCount: number;
+    runCount: number;
+    plannedRunCount: number;
+    incompleteRunCount: number;
+    completedRunCount: number;
+  };
+  topics: TopicStatusSummary[];
+  runs: RunStatusSummary[];
+  nextActions: OperatorNextAction[];
+};
+
+export type DoctorFinding = {
+  severity: "error" | "warning" | "info";
+  category: "workspace" | "topic" | "binding" | "evidence" | "run" | "attach";
+  message: string;
+  suggestedCommand?: string;
+  topicId?: string;
+  notebookBindingId?: string;
+  runId?: string;
+};
+
+export type DoctorReport = {
+  workspaceRoot: string;
+  healthy: boolean;
+  summary: {
+    errorCount: number;
+    warningCount: number;
+    infoCount: number;
+  };
+  findings: DoctorFinding[];
+};
+
+type WorkspaceArtifacts = {
+  workspace: LoadedWorkspace;
+  topics: ResearchTopic[];
+  notebookBindings: NotebookBinding[];
+  sources: SourceDocument[];
+  notebookSourceManifests: NotebookSourceManifest[];
+  runs: QARunIndex[];
+  questionBatches: Map<string, QuestionBatch>;
+  attachTargets: Awaited<ReturnType<typeof listChromeAttachTargets>>;
+};
+
+type BindingEvidenceSummary = {
+  notebookBindingId: string;
+  topicId?: string;
+  localSourceCount: number;
+  alignedNotebookEvidenceCount: number;
+  hasUsableEvidence: boolean;
+};
+
+export async function buildWorkspaceStatusReport(cwd?: string): Promise<WorkspaceStatusReport> {
+  const artifacts = await loadWorkspaceArtifacts(cwd);
+  const topicSummaries = buildTopicSummaries(artifacts);
+  const runSummaries = buildRunSummaries(artifacts);
+  const bindingEvidence = buildBindingEvidenceSummaries(artifacts);
+  const nextActions = recommendNextActions(artifacts, topicSummaries, runSummaries, bindingEvidence);
+
+  return {
+    workspaceRoot: artifacts.workspace.rootDir,
+    summary: {
+      topicCount: artifacts.topics.length,
+      notebookBindingCount: artifacts.notebookBindings.length,
+      localSourceCount: artifacts.sources.length,
+      notebookEvidenceCount: artifacts.notebookSourceManifests.filter((manifest) =>
+        artifacts.notebookBindings.some((binding) => binding.id === manifest.notebookBindingId)
+      ).length,
+      attachTargetCount: artifacts.attachTargets.length,
+      runCount: artifacts.runs.length,
+      plannedRunCount: runSummaries.filter((run) => run.status === "planned").length,
+      incompleteRunCount: runSummaries.filter((run) => run.status === "incomplete").length,
+      completedRunCount: runSummaries.filter((run) => run.status === "completed").length
+    },
+    topics: topicSummaries,
+    runs: runSummaries,
+    nextActions
+  };
+}
+
+export async function buildDoctorReport(cwd?: string): Promise<DoctorReport> {
+  const artifacts = await loadWorkspaceArtifacts(cwd);
+  const findings: DoctorFinding[] = [];
+  const bindingEvidence = buildBindingEvidenceSummaries(artifacts);
+
+  if (artifacts.topics.length === 0) {
+    findings.push({
+      severity: "info",
+      category: "workspace",
+      message: "Workspace has no research topics yet.",
+      suggestedCommand: 'sourceloop topic create --name "Your topic"'
+    });
+  }
+
+  const bindingIds = new Set(artifacts.notebookBindings.map((binding) => binding.id));
+  const attachTargetIds = new Set(artifacts.attachTargets.map((target) => target.id));
+
+  for (const topic of artifacts.topics) {
+    const topicBindings = artifacts.notebookBindings.filter((binding) => binding.topicId === topic.id);
+
+    if (topicBindings.length === 0) {
+      findings.push({
+        severity: "warning",
+        category: "topic",
+        topicId: topic.id,
+        message: `Topic ${topic.id} does not have a notebook binding yet.`,
+        suggestedCommand: `sourceloop notebook-bind --name "${topic.name}" --topic-id ${topic.id} --url "https://notebooklm.google.com/notebook/..."`
+      });
+      continue;
+    }
+
+    const bindingsMissingEvidence = topicBindings.filter((binding) => {
+      const summary = bindingEvidence.get(binding.id);
+      return !summary?.hasUsableEvidence;
+    });
+
+    for (const binding of bindingsMissingEvidence) {
+      findings.push({
+        severity: "error",
+        category: "evidence",
+        topicId: topic.id,
+        notebookBindingId: binding.id,
+        message: `Notebook binding ${binding.id} for topic ${topic.id} has no aligned local or notebook-backed evidence.`,
+        suggestedCommand: `sourceloop notebook-source declare --topic-id ${topic.id} --notebook ${binding.id} --kind mixed --title "${topic.name} source set"`
+      });
+    }
+  }
+
+  for (const binding of artifacts.notebookBindings) {
+    if (binding.attachTargetId && !attachTargetIds.has(binding.attachTargetId)) {
+      findings.push({
+        severity: "warning",
+        category: "attach",
+        notebookBindingId: binding.id,
+        ...(binding.topicId ? { topicId: binding.topicId } : {}),
+        message: `Notebook binding ${binding.id} references missing attach target ${binding.attachTargetId}.`,
+        suggestedCommand: `sourceloop attach endpoint --name ${binding.attachTargetId.replace(/^attach-/, "")} --endpoint http://127.0.0.1:9222`
+      });
+    }
+  }
+
+  for (const manifest of artifacts.notebookSourceManifests) {
+    if (!bindingIds.has(manifest.notebookBindingId)) {
+      findings.push({
+        severity: "warning",
+        category: "binding",
+        topicId: manifest.topicId,
+        notebookBindingId: manifest.notebookBindingId,
+        message: `Notebook source manifest ${manifest.id} points to missing notebook binding ${manifest.notebookBindingId}.`
+      });
+    }
+  }
+
+  for (const run of artifacts.runs) {
+    if (run.status === "incomplete") {
+      findings.push({
+        severity: "warning",
+        category: "run",
+        runId: run.id,
+        ...(run.topicId ? { topicId: run.topicId } : {}),
+        notebookBindingId: run.notebookBindingId,
+        message: `Run ${run.id} is incomplete and can be resumed from the remaining questions.`,
+        suggestedCommand: `sourceloop run ${run.id} --show-browser`
+      });
+    }
+
+    if (run.status === "planned" && !hasUsableAttachTarget(run.notebookBindingId, artifacts.notebookBindings, attachTargetIds)) {
+      findings.push({
+        severity: "warning",
+        category: "attach",
+        runId: run.id,
+        ...(run.topicId ? { topicId: run.topicId } : {}),
+        notebookBindingId: run.notebookBindingId,
+        message: `Run ${run.id} does not have a usable attach target on its notebook binding.`,
+        suggestedCommand: `sourceloop run ${run.id} --attach-target <target-id> --show-browser`
+      });
+    }
+  }
+
+  const errorCount = findings.filter((finding) => finding.severity === "error").length;
+  const warningCount = findings.filter((finding) => finding.severity === "warning").length;
+  const infoCount = findings.filter((finding) => finding.severity === "info").length;
+
+  return {
+    workspaceRoot: artifacts.workspace.rootDir,
+    healthy: errorCount === 0 && warningCount === 0,
+    summary: {
+      errorCount,
+      warningCount,
+      infoCount
+    },
+    findings
+  };
+}
+
+export function formatWorkspaceStatusReport(report: WorkspaceStatusReport): string {
+  if (report.summary.topicCount === 0) {
+    const firstAction = report.nextActions[0];
+    return [
+      `Workspace: ${report.workspaceRoot}`,
+      "",
+      "No active research setup yet.",
+      ...(firstAction ? ["", "Next Action", `- ${firstAction.message}`, `  ${firstAction.command}`] : [])
+    ].join("\n");
+  }
+
+  const topicLines =
+    report.topics.length === 0
+      ? ["- none"]
+      : report.topics.map(
+          (topic) =>
+            `- ${topic.id} [${topic.status}] notebooks:${topic.notebookBindingCount} evidence:${topic.localSourceCount + topic.notebookEvidenceCount} runs:${topic.runCount}`
+        );
+
+  const runLines =
+    report.runs.length === 0
+      ? ["- none yet"]
+      : report.runs
+          .filter((run) => run.status === "planned" || run.status === "incomplete" || run.status === "running")
+          .map(
+            (run) =>
+              `- ${run.id} [${run.status}] completed:${run.completedQuestionCount}/${run.totalQuestionCount}${run.failedQuestionId ? ` failed:${run.failedQuestionId}` : ""}`
+          );
+
+  const nextActionLines =
+    report.nextActions.length === 0
+      ? ["- none"]
+      : report.nextActions.map((action) => `- ${action.message}\n  ${action.command}`);
+
+  return [
+    `Workspace: ${report.workspaceRoot}`,
+    "",
+    "Summary",
+    `- Topics: ${report.summary.topicCount}`,
+    `- Notebook Bindings: ${report.summary.notebookBindingCount}`,
+    `- Evidence: ${report.summary.localSourceCount + report.summary.notebookEvidenceCount}`,
+    `- Runs: ${report.summary.runCount} (${report.summary.incompleteRunCount} incomplete, ${report.summary.completedRunCount} completed)`,
+    "",
+    "Topics",
+    ...topicLines,
+    "",
+    "Open Runs",
+    ...runLines,
+    "",
+    "Next Actions",
+    ...nextActionLines
+  ].join("\n");
+}
+
+export function formatDoctorReport(report: DoctorReport): string {
+  if (report.findings.length === 0) {
+    return [`Workspace: ${report.workspaceRoot}`, "", "Doctor found no workflow blockers."].join("\n");
+  }
+
+  const findingLines = report.findings.flatMap((finding) => [
+    `- [${finding.severity}][${finding.category}] ${finding.message}`,
+    ...(finding.suggestedCommand ? [`  ${finding.suggestedCommand}`] : [])
+  ]);
+
+  return [
+    `Workspace: ${report.workspaceRoot}`,
+    "",
+    `Doctor Findings: ${report.summary.errorCount} error(s), ${report.summary.warningCount} warning(s), ${report.summary.infoCount} info`,
+    ...findingLines
+  ].join("\n");
+}
+
+async function loadWorkspaceArtifacts(cwd?: string): Promise<WorkspaceArtifacts> {
+  const workspace = await loadWorkspace(cwd);
+  const vault = getVaultPaths(workspace);
+  const [topics, notebookBindings, sources, notebookSourceManifests, runs, attachTargets] = await Promise.all([
+    listTopics(workspace.rootDir),
+    readJsonDirectory(vault.notebooksDir, notebookBindingSchema),
+    readJsonDirectory(vault.sourcesDir, sourceDocumentSchema),
+    readJsonDirectory(vault.notebookSourcesDir, notebookSourceManifestSchema),
+    readJsonDirectory(vault.runsDir, runIndexSchema, "index.json"),
+    listChromeAttachTargets(workspace.rootDir)
+  ]);
+
+  const questionBatches = new Map<string, QuestionBatch>();
+  for (const run of runs) {
+    const batchPath = getRunPaths(workspace, run.id).questionsJsonPath;
+    try {
+      const raw = await readFile(batchPath, "utf8");
+      questionBatches.set(run.id, questionBatchSchema.parse(JSON.parse(raw)));
+    } catch {
+      // allow status/doctor to proceed even if a run folder is partially broken
+    }
+  }
+
+  return {
+    workspace,
+    topics,
+    notebookBindings,
+    sources,
+    notebookSourceManifests,
+    runs,
+    questionBatches,
+    attachTargets
+  };
+}
+
+function buildTopicSummaries(artifacts: WorkspaceArtifacts): TopicStatusSummary[] {
+  const bindingIds = new Set(artifacts.notebookBindings.map((binding) => binding.id));
+
+  return artifacts.topics
+    .map((topic) => {
+      const topicBindings = artifacts.notebookBindings.filter((binding) => binding.topicId === topic.id);
+      const localSourceCount = artifacts.sources.filter((source) => source.topicId === topic.id).length;
+      const notebookEvidenceCount = artifacts.notebookSourceManifests.filter(
+        (manifest) => manifest.topicId === topic.id && bindingIds.has(manifest.notebookBindingId)
+      ).length;
+      const runs = artifacts.runs.filter((run) => run.topicId === topic.id);
+
+      return {
+        id: topic.id,
+        name: topic.name,
+        status: deriveTopicStatus({
+          localSourceCount,
+          notebookEvidenceCount,
+          notebookBindingCount: topicBindings.length,
+          runs
+        }),
+        notebookBindingCount: topicBindings.length,
+        localSourceCount,
+        notebookEvidenceCount,
+        runCount: runs.length,
+        plannedRunCount: runs.filter((run) => run.status === "planned").length,
+        incompleteRunCount: runs.filter((run) => run.status === "incomplete").length,
+        completedRunCount: runs.filter((run) => run.status === "completed").length
+      };
+    })
+    .sort((left, right) => left.name.localeCompare(right.name));
+}
+
+function buildBindingEvidenceSummaries(artifacts: WorkspaceArtifacts): Map<string, BindingEvidenceSummary> {
+  return new Map(
+    artifacts.notebookBindings.map((binding) => {
+      const localSourceCount = artifacts.sources.filter((source) => source.topicId === binding.topicId).length;
+      const alignedNotebookEvidenceCount = artifacts.notebookSourceManifests.filter(
+        (manifest) => manifest.topicId === binding.topicId && manifest.notebookBindingId === binding.id
+      ).length;
+
+      return [
+        binding.id,
+        {
+          notebookBindingId: binding.id,
+          ...(binding.topicId ? { topicId: binding.topicId } : {}),
+          localSourceCount,
+          alignedNotebookEvidenceCount,
+          hasUsableEvidence: localSourceCount + alignedNotebookEvidenceCount > 0
+        }
+      ] satisfies [string, BindingEvidenceSummary];
+    })
+  );
+}
+
+function buildRunSummaries(artifacts: WorkspaceArtifacts): RunStatusSummary[] {
+  return artifacts.runs
+    .map((run) => {
+      const batch = artifacts.questionBatches.get(run.id);
+      return {
+        id: run.id,
+        topic: run.topic,
+        ...(run.topicId ? { topicId: run.topicId } : {}),
+        notebookBindingId: run.notebookBindingId,
+        status: run.status,
+        completedQuestionCount: run.completedQuestionIds.length,
+        totalQuestionCount: batch?.questions.length ?? run.completedQuestionIds.length,
+        ...(run.failedQuestionId ? { failedQuestionId: run.failedQuestionId } : {}),
+        ...(run.executionMode ? { executionMode: run.executionMode } : {})
+      };
+    })
+    .sort((left, right) => right.id.localeCompare(left.id));
+}
+
+function recommendNextActions(
+  artifacts: WorkspaceArtifacts,
+  topics: TopicStatusSummary[],
+  runs: RunStatusSummary[],
+  bindingEvidence: Map<string, BindingEvidenceSummary>
+): OperatorNextAction[] {
+  const actions: OperatorNextAction[] = [];
+
+  if (artifacts.topics.length === 0) {
+    return [
+      {
+        kind: "create_topic",
+        message: "Create your first research topic.",
+        command: 'sourceloop topic create --name "Your topic"'
+      }
+    ];
+  }
+
+  for (const run of runs.filter((candidate) => candidate.status === "incomplete")) {
+    actions.push({
+      kind: "resume_run",
+      runId: run.id,
+      ...(run.topicId ? { topicId: run.topicId } : {}),
+      notebookBindingId: run.notebookBindingId,
+      message: `Resume incomplete run ${run.id}.`,
+      command: `sourceloop run ${run.id} --show-browser`
+    });
+  }
+
+  for (const topic of topics) {
+    if (topic.notebookBindingCount === 0) {
+      actions.push({
+        kind: "bind_notebook",
+        topicId: topic.id,
+        message: `Bind a NotebookLM notebook for topic ${topic.id}.`,
+        command: `sourceloop notebook-bind --name "${topic.name}" --topic-id ${topic.id} --url "https://notebooklm.google.com/notebook/..."`
+      });
+      continue;
+    }
+
+    const missingEvidenceBinding = artifacts.notebookBindings.find(
+      (candidate) => candidate.topicId === topic.id && !bindingEvidence.get(candidate.id)?.hasUsableEvidence
+    );
+
+    if (missingEvidenceBinding) {
+      actions.push({
+        kind: "declare_evidence",
+        topicId: topic.id,
+        notebookBindingId: missingEvidenceBinding.id,
+        message: `Declare evidence for topic ${topic.id}.`,
+        command: `sourceloop notebook-source declare --topic-id ${topic.id} --notebook ${missingEvidenceBinding.id} --kind mixed --title "${topic.name} source set"`
+      });
+      continue;
+    }
+
+    if (topic.runCount === 0) {
+      const hasUsableBinding = artifacts.notebookBindings.some(
+        (binding) => binding.topicId === topic.id && bindingEvidence.get(binding.id)?.hasUsableEvidence
+      );
+      if (!hasUsableBinding) {
+        continue;
+      }
+      actions.push({
+        kind: "plan_questions",
+        topicId: topic.id,
+        message: `Plan questions for topic ${topic.id}.`,
+        command: `sourceloop plan ${topic.id}`
+      });
+      continue;
+    }
+
+    const plannedRun = runs.find((run) => run.topicId === topic.id && run.status === "planned");
+    if (plannedRun && bindingEvidence.get(plannedRun.notebookBindingId)?.hasUsableEvidence) {
+      actions.push({
+        kind: "run_planned",
+        topicId: topic.id,
+        runId: plannedRun.id,
+        notebookBindingId: plannedRun.notebookBindingId,
+        message: `Run planned batch ${plannedRun.id}.`,
+        command: `sourceloop run ${plannedRun.id} --show-browser`
+      });
+    }
+  }
+
+  return dedupeActions(actions).slice(0, 6);
+}
+
+function dedupeActions(actions: OperatorNextAction[]): OperatorNextAction[] {
+  const seen = new Set<string>();
+  return actions.filter((action) => {
+    const key = `${action.kind}:${action.topicId ?? ""}:${action.runId ?? ""}:${action.notebookBindingId ?? ""}`;
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+}
+
+function deriveTopicStatus(input: {
+  localSourceCount: number;
+  notebookEvidenceCount: number;
+  notebookBindingCount: number;
+  runs: QARunIndex[];
+}): TopicStatus {
+  if (
+    input.runs.some(
+      (run) =>
+        run.completedQuestionIds.length > 0 ||
+        run.status === "completed" ||
+        run.status === "incomplete"
+    )
+  ) {
+    return "researched";
+  }
+
+  if (input.localSourceCount + input.notebookEvidenceCount > 0 && input.notebookBindingCount > 0) {
+    return "ready_for_planning";
+  }
+  if (input.localSourceCount + input.notebookEvidenceCount > 0 || input.notebookBindingCount > 0) {
+    return "collecting_sources";
+  }
+  return "initialized";
+}
+
+function hasUsableAttachTarget(
+  notebookBindingId: string,
+  bindings: NotebookBinding[],
+  attachTargetIds: Set<string>
+): boolean {
+  const binding = bindings.find((candidate) => candidate.id === notebookBindingId);
+  if (!binding?.attachTargetId) {
+    return false;
+  }
+  return attachTargetIds.has(binding.attachTargetId);
+}
+
+async function readJsonDirectory<T>(
+  directory: string,
+  schema: { parse(value: unknown): T },
+  nestedJsonFile?: string
+): Promise<T[]> {
+  try {
+    const entries = await readdir(directory, { withFileTypes: true });
+    const filePaths = entries.flatMap((entry) => {
+      if (entry.isDirectory()) {
+        return nestedJsonFile ? [path.join(directory, entry.name, nestedJsonFile)] : [];
+      }
+      if (entry.isFile() && entry.name.endsWith(".json")) {
+        return [path.join(directory, entry.name)];
+      }
+      return [];
+    });
+    const raw = await Promise.all(filePaths.map((filePath) => readFile(filePath, "utf8")));
+    return raw.map((value) => schema.parse(JSON.parse(value)));
+  } catch (error) {
+    if (isMissingDirectoryError(error)) {
+      return [];
+    }
+    throw error;
+  }
+}
+
+function isMissingDirectoryError(error: unknown): boolean {
+  return Boolean(error && typeof error === "object" && "code" in error && error.code === "ENOENT");
+}

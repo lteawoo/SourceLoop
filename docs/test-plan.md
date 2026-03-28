@@ -9,6 +9,7 @@ Validate that SourceLoop can run the topic-first NotebookLM workflow end to end 
 User-facing flows in scope:
 
 - Workspace initialization
+- Workspace status and doctor diagnostics
 - Topic creation and inspection
 - Topic-linked source ingest
 - Chrome attach registration and validation
@@ -47,6 +48,8 @@ Expected:
 - TypeScript build succeeds
 - Vitest suite passes
 - Topic-first workflow tests pass
+- Status/doctor summary tests pass
+- JSON output tests for representative commands pass
 - Attach lifecycle tests pass
 - Markdown output assertions pass
 
@@ -64,6 +67,7 @@ Run:
 cd /Users/twlee/projects/SourceLoop
 pnpm build
 pnpm test
+pnpm link --global
 ```
 
 ### 1. Create a fresh workspace
@@ -81,15 +85,22 @@ Check:
 - `.sourceloop/config.json` exists
 - `vault/` subdirectories exist
 
+Optional operator check:
+
+```bash
+sourceloop status
+sourceloop doctor
+```
+
 ### 2. Create the topic
 
 Run:
 
 ```bash
-node /Users/twlee/projects/SourceLoop/dist/index.js topic create \
+sourceloop topic create \
   --name "Professional Web Design with Claude Code"
 
-node /Users/twlee/projects/SourceLoop/dist/index.js topic list
+sourceloop topic list
 ```
 
 Expected topic id:
@@ -131,7 +142,7 @@ curl http://127.0.0.1:9222/json/version
 Run:
 
 ```bash
-node /Users/twlee/projects/SourceLoop/dist/index.js attach endpoint \
+sourceloop attach endpoint \
   --name test-chrome \
   --endpoint http://127.0.0.1:9222
 ```
@@ -139,7 +150,7 @@ node /Users/twlee/projects/SourceLoop/dist/index.js attach endpoint \
 If the target already exists, either reuse it or overwrite it:
 
 ```bash
-node /Users/twlee/projects/SourceLoop/dist/index.js attach endpoint \
+sourceloop attach endpoint \
   --name test-chrome \
   --endpoint http://127.0.0.1:9222 \
   --force
@@ -152,7 +163,7 @@ Important: use a real notebook URL, not the NotebookLM home page.
 Run:
 
 ```bash
-node /Users/twlee/projects/SourceLoop/dist/index.js attach validate \
+sourceloop attach validate \
   attach-test-chrome \
   --notebook-url "https://notebooklm.google.com/notebook/<real-notebook-id>" \
   --show-browser
@@ -169,7 +180,7 @@ Check:
 Run:
 
 ```bash
-node /Users/twlee/projects/SourceLoop/dist/index.js notebook-bind \
+sourceloop notebook-bind \
   --name "Claude Code Web Design" \
   --topic-id topic-professional-web-design-with-claude-code \
   --url "https://notebooklm.google.com/notebook/<real-notebook-id>" \
@@ -181,7 +192,7 @@ node /Users/twlee/projects/SourceLoop/dist/index.js notebook-bind \
 Run:
 
 ```bash
-node /Users/twlee/projects/SourceLoop/dist/index.js notebook-source declare \
+sourceloop notebook-source declare \
   --topic-id topic-professional-web-design-with-claude-code \
   --notebook notebook-claude-code-web-design \
   --kind youtube-playlist \
@@ -194,7 +205,7 @@ node /Users/twlee/projects/SourceLoop/dist/index.js notebook-source declare \
 Run:
 
 ```bash
-node /Users/twlee/projects/SourceLoop/dist/index.js plan \
+sourceloop plan \
   topic-professional-web-design-with-claude-code
 ```
 
@@ -203,7 +214,7 @@ Capture the printed `run-id`.
 Optional focused planning:
 
 ```bash
-node /Users/twlee/projects/SourceLoop/dist/index.js plan \
+sourceloop plan \
   topic-professional-web-design-with-claude-code \
   --max-questions 3 \
   --families core,execution
@@ -214,7 +225,7 @@ node /Users/twlee/projects/SourceLoop/dist/index.js plan \
 Run:
 
 ```bash
-node /Users/twlee/projects/SourceLoop/dist/index.js run <run-id> --show-browser
+sourceloop run <run-id> --show-browser
 ```
 
 Check:
@@ -227,7 +238,7 @@ Check:
 Optional partial execution:
 
 ```bash
-node /Users/twlee/projects/SourceLoop/dist/index.js run <run-id> \
+sourceloop run <run-id> \
   --from-question <question-id> \
   --limit 2 \
   --show-browser
@@ -236,7 +247,7 @@ node /Users/twlee/projects/SourceLoop/dist/index.js run <run-id> \
 Or target explicit planned questions:
 
 ```bash
-node /Users/twlee/projects/SourceLoop/dist/index.js run <run-id> \
+sourceloop run <run-id> \
   --question-id <question-id-1> \
   --question-id <question-id-2> \
   --show-browser
@@ -249,16 +260,34 @@ Use this when a reply already exists in NotebookLM and you want to backfill the 
 Run:
 
 ```bash
-node /Users/twlee/projects/SourceLoop/dist/index.js import-latest <run-id> --show-browser
+sourceloop import-latest <run-id> --show-browser
 ```
 
 Optional explicit question mapping:
 
 ```bash
-node /Users/twlee/projects/SourceLoop/dist/index.js import-latest <run-id> \
+sourceloop import-latest <run-id> \
   --question-id <question-id> \
   --show-browser
 ```
+
+### 12. Check operator-facing structured output
+
+Run:
+
+```bash
+sourceloop status --json
+sourceloop doctor --json
+sourceloop topic show topic-professional-web-design-with-claude-code --json
+sourceloop notebook-source list --json
+```
+
+Check:
+
+- JSON parses cleanly
+- `status --json` includes `summary`, `topics`, `runs`, `nextActions`
+- `doctor --json` includes `summary` and `findings`
+- object ids and artifact paths are usable for the next scripted step
 
 Check:
 

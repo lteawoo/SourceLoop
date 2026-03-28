@@ -1,5 +1,6 @@
 import { Command } from "commander";
 import { bindNotebook } from "../core/notebooks/bind-notebook.js";
+import { writeJsonOutput, writeTextOutput } from "../lib/cli-output.js";
 
 export const notebookBindCommand = new Command("notebook-bind")
   .description("Create a notebook binding record for a NotebookLM target")
@@ -13,6 +14,7 @@ export const notebookBindCommand = new Command("notebook-bind")
   .option("--topics <topics>", "comma-separated notebook topics")
   .option("--attach-target <target-id>", "default attached Chrome target for this notebook")
   .option("--browser-profile <profile>", "browser profile alias for this binding")
+  .option("--json", "emit machine-readable JSON", false)
   .action(
     async (options: {
       name: string;
@@ -25,6 +27,7 @@ export const notebookBindCommand = new Command("notebook-bind")
       topics?: string;
       attachTarget?: string;
       browserProfile?: string;
+      json: boolean;
     }) => {
       if (!options.topicId && !options.topic) {
         throw new Error("Provide --topic-id for the preferred topic-first flow or --topic for the legacy notebook-first flow.");
@@ -43,6 +46,11 @@ export const notebookBindCommand = new Command("notebook-bind")
         ...(options.browserProfile ? { browserProfile: options.browserProfile } : {})
       });
 
-      process.stdout.write(`Bound notebook ${result.binding.id} at ${result.markdownPath}\n`);
+      if (options.json) {
+        writeJsonOutput(result);
+        return;
+      }
+
+      writeTextOutput(`Bound notebook ${result.binding.id} at ${result.markdownPath}`);
     }
   );
