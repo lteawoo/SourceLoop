@@ -335,7 +335,7 @@ export async function buildDoctorReport(cwd?: string): Promise<DoctorReport> {
         ...(run.topicId ? { topicId: run.topicId } : {}),
         notebookBindingId: run.notebookBindingId,
         message: `Run ${run.id} is incomplete and can be resumed from the remaining questions.`,
-        suggestedCommand: `sourceloop run ${run.id} --show-browser`
+        suggestedCommand: `sourceloop run ${run.id}`
       });
     }
 
@@ -347,7 +347,7 @@ export async function buildDoctorReport(cwd?: string): Promise<DoctorReport> {
         ...(run.topicId ? { topicId: run.topicId } : {}),
         notebookBindingId: run.notebookBindingId,
         message: `Run ${run.id} does not have a usable attach target on its notebook binding.`,
-        suggestedCommand: `sourceloop run ${run.id} --attach-target <target-id> --show-browser`
+        suggestedCommand: `sourceloop run ${run.id} --attach-target <target-id>`
       });
     }
   }
@@ -655,7 +655,7 @@ function recommendNextActions(
       ...(run.topicId ? { topicId: run.topicId } : {}),
       notebookBindingId: run.notebookBindingId,
       message: `Resume incomplete run ${run.id}.`,
-      command: `sourceloop run ${run.id} --show-browser`
+      command: `sourceloop run ${run.id}`
     });
   }
 
@@ -746,7 +746,7 @@ function recommendNextActions(
         runId: plannedRun.id,
         notebookBindingId: plannedRun.notebookBindingId,
         message: `Run planned batch ${plannedRun.id}.`,
-        command: `sourceloop run ${plannedRun.id} --show-browser`
+        command: `sourceloop run ${plannedRun.id}`
       });
     }
   }
