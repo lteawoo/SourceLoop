@@ -28,6 +28,7 @@ function withWorkspaceDefaults(config: Partial<WorkspaceConfig>): WorkspaceConfi
       chromeTargets: config.paths?.chromeTargets ?? "vault/chrome-targets",
       topics: config.paths?.topics ?? "vault/topics",
       sources: config.paths?.sources ?? "vault/sources",
+      notebookSources: config.paths?.notebookSources ?? "vault/notebook-sources",
       notebooks: config.paths?.notebooks ?? "vault/notebooks",
       bundles: config.paths?.bundles ?? "vault/bundles",
       runs: config.paths?.runs ?? "vault/runs",

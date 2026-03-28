@@ -1,6 +1,7 @@
 import path from "node:path";
 import type { ChromeAttachTarget } from "../../schemas/attach.js";
 import type { NotebookBinding } from "../../schemas/notebook.js";
+import type { NotebookSourceManifest } from "../../schemas/notebook-source.js";
 import type { OutputArtifact, PlannedQuestion, QAExchange, QARunIndex, QuestionBatch } from "../../schemas/run.js";
 import type { SourceDocument } from "../../schemas/source.js";
 import type { ResearchTopic } from "../../schemas/topic.js";
@@ -69,6 +70,16 @@ export function getNotebookNote(workspace: LoadedWorkspace, binding: NotebookBin
     title,
     fileName: readableFileName(title, binding.id),
     absolutePath: path.join(vault.notebooksDir, readableFileName(title, binding.id))
+  };
+}
+
+export function getNotebookSourceManifestNote(workspace: LoadedWorkspace, manifest: NotebookSourceManifest): NoteIdentity {
+  const vault = getVaultPaths(workspace);
+  const title = normalizeTitle(manifest.title, manifest.id);
+  return {
+    title,
+    fileName: readableFileName(title, manifest.id),
+    absolutePath: path.join(vault.notebookSourcesDir, readableFileName(title, manifest.id))
   };
 }
 

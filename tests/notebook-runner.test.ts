@@ -4,17 +4,18 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { bindNotebook } from "../src/core/notebooks/bind-notebook.js";
+import { declareNotebookSourceManifest } from "../src/core/notebooks/manage-notebook-source-manifests.js";
 import { composeRun } from "../src/core/outputs/compose-run.js";
 import { FixtureNotebookRunnerAdapter } from "../src/core/notebooklm/fixture-adapter.js";
 import { createQuestionPlan } from "../src/core/runs/question-planner.js";
 import { executeQARun, importLatestAnswerIntoRun } from "../src/core/runs/run-qa.js";
 import { registerChromeEndpointTarget } from "../src/core/attach/manage-targets.js";
-import { createTopic, loadTopic } from "../src/core/topics/manage-topics.js";
+import { createTopic, loadTopic, refreshTopicArtifacts } from "../src/core/topics/manage-topics.js";
 import { initializeWorkspace } from "../src/core/workspace/init-workspace.js";
 import { ingestSource } from "../src/core/ingest/ingest-source.js";
 import { resolvePlanInput } from "../src/commands/plan.js";
 import { runCommand } from "../src/commands/run.js";
-import { getExchangeNote } from "../src/core/vault/notes.js";
+import { getExchangeNote, getTopicCorpusNote } from "../src/core/vault/notes.js";
 import { loadWorkspace } from "../src/core/workspace/load-workspace.js";
 
 describe("NotebookLM QA run archive", () => {
@@ -188,6 +189,46 @@ describe("NotebookLM QA run archive", () => {
     expect(refreshed.corpus.runIds).toContain(plan.run.id);
   });
 
+  it("treats notebook-source manifests as topic corpus evidence", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
+    await initializeWorkspace({ directory: workspaceRoot, force: false });
+
+    const topic = await createTopic({
+      cwd: workspaceRoot,
+      name: "Notebook-backed AI agents market"
+    });
+
+    const binding = await bindNotebook({
+      cwd: workspaceRoot,
+      name: "Notebook-backed Agents Notebook",
+      topic: topic.topic.name,
+      topicId: topic.topic.id,
+      notebookUrl: "https://notebooklm.google.com/notebook/notebook-backed",
+      accessMode: "owner"
+    });
+
+    const manifest = await declareNotebookSourceManifest({
+      cwd: workspaceRoot,
+      topicId: topic.topic.id,
+      notebookBindingId: binding.binding.id,
+      kind: "youtube-playlist",
+      title: "AI agents playlist",
+      refs: ["https://youtube.com/playlist?list=abc"]
+    });
+
+    const refreshed = await loadTopic(topic.topic.id, workspaceRoot);
+    const workspace = await loadWorkspace(workspaceRoot);
+    const corpusMarkdown = await readFile(getTopicCorpusNote(workspace, refreshed.topic).absolutePath, "utf8");
+
+    expect(manifest.manifest.topicId).toBe(topic.topic.id);
+    expect(refreshed.topic.status).toBe("ready_for_planning");
+    expect(refreshed.corpus.sourceIds).toHaveLength(0);
+    expect(refreshed.corpus.notebookBindingIds).toContain(binding.binding.id);
+    expect(refreshed.corpus.notebookSourceManifestIds).toContain(manifest.manifest.id);
+    expect(corpusMarkdown).toContain("## Notebook-backed Sources");
+    expect(corpusMarkdown).toContain("AI agents playlist");
+  });
+
   it("supports bounded planning and family-filter planning", async () => {
     const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
     await initializeWorkspace({ directory: workspaceRoot, force: false });
@@ -226,7 +267,7 @@ describe("NotebookLM QA run archive", () => {
     expect(questionsMarkdown).toContain("selected_families:");
   });
 
-  it("fails topic-first runs before execution when the topic corpus and notebook binding are misaligned", async () => {
+  it("fails topic-first planning when the topic corpus and notebook binding are misaligned", async () => {
     const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
     await initializeWorkspace({ directory: workspaceRoot, force: false });
 
@@ -260,14 +301,191 @@ describe("NotebookLM QA run archive", () => {
       accessMode: "owner"
     });
 
-    const plan = await createQuestionPlan({
+    await expect(
+      createQuestionPlan({
+        cwd: workspaceRoot,
+        topicId: marketTopic.topic.id,
+        notebookBindingId: foreignBinding.binding.id
+      })
+    ).rejects.toThrow(/belongs to .*not topic|corpus does not include notebook binding/i);
+  });
+
+  it("allows topic-first runs when notebook-backed evidence exists without local source notes", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
+    await initializeWorkspace({ directory: workspaceRoot, force: false });
+
+    const topic = await createTopic({
       cwd: workspaceRoot,
-      topicId: marketTopic.topic.id,
-      notebookBindingId: foreignBinding.binding.id
+      name: "Notebook-backed planning topic"
     });
 
-    const fixturePath = path.join(workspaceRoot, "misaligned-fixture.json");
+    const binding = await bindNotebook({
+      cwd: workspaceRoot,
+      name: "Notebook-backed Planning Notebook",
+      topic: topic.topic.name,
+      topicId: topic.topic.id,
+      notebookUrl: "https://notebooklm.google.com/notebook/notebook-backed-planning",
+      accessMode: "owner"
+    });
+
+    await declareNotebookSourceManifest({
+      cwd: workspaceRoot,
+      topicId: topic.topic.id,
+      notebookBindingId: binding.binding.id,
+      kind: "document-set",
+      title: "Bound document set"
+    });
+
+    const plan = await createQuestionPlan({
+      cwd: workspaceRoot,
+      topicId: topic.topic.id
+    });
+
+    const fixturePath = path.join(workspaceRoot, "manifest-only-fixture.json");
+    const fixtureResponses = Object.fromEntries(
+      plan.batch.questions.map((question, index) => [
+        question.id,
+        {
+          answer: `Manifest-backed answer ${index + 1}`,
+          citations: [{ label: `${index + 1}` }]
+        }
+      ])
+    );
+    await writeFile(fixturePath, JSON.stringify(fixtureResponses, null, 2), "utf8");
+
+    const runResult = await executeQARun({
+      cwd: workspaceRoot,
+      runId: plan.run.id,
+      adapter: await FixtureNotebookRunnerAdapter.fromFile(fixturePath)
+    });
+
+    expect(runResult.run.status).toBe("completed");
+  });
+
+  it("requires notebook-backed evidence to align with the specific bound notebook", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
+    await initializeWorkspace({ directory: workspaceRoot, force: false });
+
+    const topic = await createTopic({
+      cwd: workspaceRoot,
+      name: "Multi notebook topic"
+    });
+
+    const primaryBinding = await bindNotebook({
+      cwd: workspaceRoot,
+      name: "Primary Notebook",
+      topic: topic.topic.name,
+      topicId: topic.topic.id,
+      notebookUrl: "https://notebooklm.google.com/notebook/primary",
+      accessMode: "owner"
+    });
+    const secondaryBinding = await bindNotebook({
+      cwd: workspaceRoot,
+      name: "Secondary Notebook",
+      topic: topic.topic.name,
+      topicId: topic.topic.id,
+      notebookUrl: "https://notebooklm.google.com/notebook/secondary",
+      accessMode: "owner"
+    });
+
+    await declareNotebookSourceManifest({
+      cwd: workspaceRoot,
+      topicId: topic.topic.id,
+      notebookBindingId: primaryBinding.binding.id,
+      kind: "youtube-playlist",
+      title: "Primary notebook evidence"
+    });
+
+    await expect(
+      createQuestionPlan({
+        cwd: workspaceRoot,
+        topicId: topic.topic.id,
+        notebookBindingId: secondaryBinding.binding.id
+      })
+    ).rejects.toThrow(/aligned to notebook binding|for this notebook/i);
+  });
+
+  it("drops notebook-backed evidence from topic readiness when its bound notebook disappears", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
+    await initializeWorkspace({ directory: workspaceRoot, force: false });
+
+    const topic = await createTopic({
+      cwd: workspaceRoot,
+      name: "Stale notebook evidence topic"
+    });
+
+    const binding = await bindNotebook({
+      cwd: workspaceRoot,
+      name: "Ephemeral Notebook",
+      topic: topic.topic.name,
+      topicId: topic.topic.id,
+      notebookUrl: "https://notebooklm.google.com/notebook/ephemeral",
+      accessMode: "owner"
+    });
+
+    const manifest = await declareNotebookSourceManifest({
+      cwd: workspaceRoot,
+      topicId: topic.topic.id,
+      notebookBindingId: binding.binding.id,
+      kind: "document-set",
+      title: "Ephemeral evidence"
+    });
+
+    let refreshed = await loadTopic(topic.topic.id, workspaceRoot);
+    expect(refreshed.topic.status).toBe("ready_for_planning");
+    expect(refreshed.corpus.notebookSourceManifestIds).toContain(manifest.manifest.id);
+
+    await rm(path.join(workspaceRoot, "vault", "notebooks", `${binding.binding.id}.json`), { force: true });
+    await rm(binding.markdownPath, { force: true });
+
+    const updated = await refreshTopicArtifacts(topic.topic.id, workspaceRoot);
+    expect(updated.topic.status).toBe("initialized");
+    expect(updated.corpus.notebookBindingIds).toHaveLength(0);
+    expect(updated.corpus.notebookSourceManifestIds).toHaveLength(0);
+  });
+
+  it("fails topic-first runs when neither local sources nor notebook-backed evidence exist", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
+    await initializeWorkspace({ directory: workspaceRoot, force: false });
+
+    const topic = await createTopic({
+      cwd: workspaceRoot,
+      name: "Unbacked topic"
+    });
+
+    const binding = await bindNotebook({
+      cwd: workspaceRoot,
+      name: "Unbacked Notebook",
+      topic: topic.topic.name,
+      topicId: topic.topic.id,
+      notebookUrl: "https://notebooklm.google.com/notebook/unbacked",
+      accessMode: "owner"
+    });
+
+    const fixturePath = path.join(workspaceRoot, "unbacked-fixture.json");
     await writeFile(fixturePath, JSON.stringify({}, null, 2), "utf8");
+
+    await expect(
+      createQuestionPlan({
+        cwd: workspaceRoot,
+        topicId: topic.topic.id,
+        notebookBindingId: binding.binding.id
+      })
+    ).rejects.toThrow(/no declared evidence|notebook-source manifest/i);
+
+    const sourcePath = path.join(workspaceRoot, "unbacked-source.md");
+    await writeFile(sourcePath, "fallback source", "utf8");
+    await ingestSource({
+      cwd: workspaceRoot,
+      input: sourcePath,
+      topicId: topic.topic.id
+    });
+
+    const plan = await createQuestionPlan({
+      cwd: workspaceRoot,
+      topicId: topic.topic.id,
+      notebookBindingId: binding.binding.id
+    });
 
     await expect(
       executeQARun({
@@ -275,15 +493,11 @@ describe("NotebookLM QA run archive", () => {
         runId: plan.run.id,
         adapter: await FixtureNotebookRunnerAdapter.fromFile(fixturePath)
       })
-    ).rejects.toThrow(/targets topic|attached to/i);
-
-    const runIndex = JSON.parse(await readFile(path.join(plan.runDir, "index.json"), "utf8")) as {
-      status: string;
-      failureReason?: string;
-    };
-
-    expect(runIndex.status).toBe("failed");
-    expect(runIndex.failureReason).toMatch(/targets topic|attached to/i);
+    ).resolves.toMatchObject({
+      run: {
+        status: "incomplete"
+      }
+    });
   });
 
   it("treats topic-like legacy strings as freeform topics when no topic artifact exists", async () => {

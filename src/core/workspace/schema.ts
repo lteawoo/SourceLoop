@@ -7,6 +7,7 @@ export const workspaceConfigSchema = z.object({
     chromeTargets: z.string().min(1),
     topics: z.string().min(1),
     sources: z.string().min(1),
+    notebookSources: z.string().min(1),
     notebooks: z.string().min(1),
     bundles: z.string().min(1),
     runs: z.string().min(1),

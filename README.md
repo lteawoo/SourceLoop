@@ -5,7 +5,7 @@ SourceLoop is a local-first research runner that connects a topic, a NotebookLM 
 It is designed for the workflow:
 
 1. A human chooses a topic
-2. SourceLoop organizes local source notes around that topic
+2. SourceLoop records local sources or notebook-backed source manifests around that topic
 3. NotebookLM answers a planned set of deep questions
 4. SourceLoop archives the Q&A as Obsidian-friendly Markdown
 5. Final expression stays human-owned
@@ -16,6 +16,7 @@ SourceLoop is not a NotebookLM replacement. It is an orchestration and archive l
 
 - Creates topic-first research roots
 - Stores local source notes and topic corpus metadata
+- Declares notebook-backed source manifests for material already loaded into NotebookLM
 - Registers already signed-in Chrome targets
 - Binds a NotebookLM notebook to a topic
 - Generates deep planned research questions with bounded scope controls
@@ -26,7 +27,7 @@ SourceLoop is not a NotebookLM replacement. It is an orchestration and archive l
 
 ```text
 Topic
--> Sources
+-> Sources / Notebook-backed Source Declarations
 -> Notebook Binding
 -> Deep Question Plan
 -> NotebookLM Run
@@ -40,7 +41,6 @@ sourceloop init <workspace>
 cd <workspace>
 
 sourceloop topic create --name "AI agents market"
-sourceloop ingest ./sources/market-map.md --topic topic-ai-agents-market
 
 # sign in to NotebookLM in Chrome yourself first
 sourceloop attach endpoint --name work-chrome --endpoint http://127.0.0.1:9222
@@ -50,6 +50,13 @@ sourceloop notebook-bind \
   --topic-id topic-ai-agents-market \
   --url "https://notebooklm.google.com/notebook/..." \
   --attach-target attach-work-chrome
+
+sourceloop notebook-source declare \
+  --topic-id topic-ai-agents-market \
+  --notebook notebook-ai-agents \
+  --kind youtube-playlist \
+  --title "AI agents market source set" \
+  --ref "https://youtube.com/playlist?list=..."
 
 sourceloop plan topic-ai-agents-market --max-questions 5 --families core,execution
 sourceloop run <run-id> --from-question <question-id> --limit 2 --show-browser
@@ -61,6 +68,7 @@ sourceloop run <run-id> --from-question <question-id> --limit 2 --show-browser
 vault/
 ├─ chrome-targets/
 ├─ notebooks/
+├─ notebook-sources/
 ├─ runs/
 ├─ sources/
 └─ topics/
@@ -99,7 +107,7 @@ Still rough around:
 
 - NotebookLM UI selector stability
 - Citation capture fidelity
-- Source ingestion beyond local notes and basic URLs
+- Automatic NotebookLM source introspection beyond operator-declared manifests
 
 ## Development
 

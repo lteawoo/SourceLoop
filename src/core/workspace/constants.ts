@@ -5,6 +5,7 @@ export const WORKSPACE_DIRECTORIES = [
   "vault/chrome-targets",
   "vault/topics",
   "vault/sources",
+  "vault/notebook-sources",
   "vault/bundles",
   "vault/notebooks",
   "vault/runs",
