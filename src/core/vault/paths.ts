@@ -8,6 +8,7 @@ export function getVaultPaths(workspace: LoadedWorkspace) {
   return {
     root,
     vaultRoot,
+    chromeProfilesDir: path.join(root, workspace.config.paths.chromeProfiles),
     chromeTargetsDir: path.join(vaultRoot, "chrome-targets"),
     topicsDir: path.join(vaultRoot, "topics"),
     sourcesDir: path.join(vaultRoot, "sources"),

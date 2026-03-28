@@ -78,14 +78,15 @@ Run:
 
 ```bash
 mkdir -p /Users/twlee/projects/SourceLoop/tmp/demo-workspace
-node /Users/twlee/projects/SourceLoop/dist/index.js init /Users/twlee/projects/SourceLoop/tmp/demo-workspace
 cd /Users/twlee/projects/SourceLoop/tmp/demo-workspace
+sourceloop init --ai codex
 ```
 
 Check:
 
 - `.sourceloop/config.json` exists
 - `vault/` subdirectories exist
+- `.codex/skills/sourceloop-operator/SKILL.md` exists
 
 Optional operator check:
 
@@ -124,50 +125,27 @@ sourceloop ingest research-notes.md \
 
 Capture the emitted `source-id` if you plan to import that specific local source into the managed notebook.
 
-### 4. Launch Chrome manually with remote debugging
-
-Run this in a separate terminal and leave it open:
-
-```bash
-"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
-  --user-data-dir="/Users/twlee/projects/SourceLoop/tmp/chrome-test-profile" \
-  --remote-debugging-port=9222 \
-  --no-first-run \
-  --no-default-browser-check \
-  "https://notebooklm.google.com/"
-```
-
-Then:
-
-- sign in to Google manually
-- open the target NotebookLM notebook
-
-Optional check:
-
-```bash
-curl http://127.0.0.1:9222/json/version
-```
-
-### 5. Register the attached Chrome endpoint
+### 4. Launch an isolated Chrome research profile
 
 Run:
 
 ```bash
-sourceloop attach endpoint \
-  --name test-chrome \
-  --endpoint http://127.0.0.1:9222
+sourceloop chrome launch --name test-chrome
 ```
 
-If the target already exists, either reuse it or overwrite it:
+Then:
+
+- wait for Chrome to open
+- sign in to Google manually inside that launched profile
+- keep using the launched research profile, not your default personal Chrome profile
+
+Optional check:
 
 ```bash
-sourceloop attach endpoint \
-  --name test-chrome \
-  --endpoint http://127.0.0.1:9222 \
-  --force
+sourceloop attach show attach-test-chrome
 ```
 
-### 6. Validate the NotebookLM target
+### 5. Validate the NotebookLM target
 
 Important: use a real notebook URL, not the NotebookLM home page.
 
@@ -186,7 +164,7 @@ Check:
 - shell prompt returns
 - attached Chrome stays open
 
-### 7. Create a managed notebook
+### 6. Create a managed notebook
 
 Run:
 
@@ -203,7 +181,7 @@ Check:
 - managed notebook setup note/json exists
 - topic corpus now includes the notebook binding
 
-### 8. Import managed sources into the notebook
+### 7. Import managed sources into the notebook
 
 Run at least one local-source import and one remote URL import:
 
@@ -223,7 +201,7 @@ Check:
 - imported items move topic readiness toward `ready_for_planning`
 - queued or failed imports are visible in `sourceloop doctor`
 
-### 9. Create a notebook binding instead when reusing an existing notebook
+### 8. Create a notebook binding instead when reusing an existing notebook
 
 Run:
 
@@ -235,7 +213,7 @@ sourceloop notebook-bind \
   --attach-target attach-test-chrome
 ```
 
-### 10. Declare the notebook-backed source bundle when NotebookLM already contains the real source set
+### 9. Declare the notebook-backed source bundle when NotebookLM already contains the real source set
 
 Run:
 
@@ -248,7 +226,7 @@ sourceloop notebook-source declare \
   --ref "https://youtube.com/playlist?list=<real-playlist-id>"
 ```
 
-### 11. Create a question plan
+### 10. Create a question plan
 
 Run:
 

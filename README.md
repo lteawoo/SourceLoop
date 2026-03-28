@@ -30,6 +30,7 @@ SourceLoop is not a NotebookLM replacement. It is an orchestration and archive l
 
 ```text
 Topic
+-> Attached Chrome / NotebookLM Session Ready
 -> Managed Notebook Create or Existing Notebook Bind
 -> Source Imports / Notebook-backed Source Declarations
 -> Deep Question Plan
@@ -40,16 +41,20 @@ Topic
 ## Preferred Usage
 
 ```bash
-sourceloop init <workspace>
-cd <workspace>
+mkdir my-research-workspace
+cd my-research-workspace
+sourceloop init --ai codex
 
 sourceloop status
 sourceloop doctor
 
 sourceloop topic create --name "AI agents market"
 
-# sign in to NotebookLM in Chrome yourself first
-sourceloop attach endpoint --name work-chrome --endpoint http://127.0.0.1:9222
+# launch a dedicated Chrome research profile, sign in to NotebookLM yourself, then attach it
+sourceloop chrome launch --name work-chrome
+sourceloop attach validate \
+  attach-work-chrome \
+  --notebook-url "https://notebooklm.google.com/notebook/<real-notebook-id>"
 
 sourceloop notebook-create \
   --name "AI Agents" \
@@ -101,11 +106,14 @@ Example machine-readable flow:
 sourceloop status --json
 sourceloop doctor --json
 sourceloop topic create --name "AI agents market" --json
+sourceloop chrome launch --name work-chrome
 sourceloop notebook-create --name "AI Agents" --topic-id topic-ai-agents-market --attach-target attach-work-chrome --json
 sourceloop notebook-import --notebook notebook-ai-agents --url "https://youtube.com/watch?v=..." --json
 sourceloop plan topic-ai-agents-market --max-questions 3 --json
 sourceloop run <run-id> --limit 1 --json
 ```
+
+SourceLoop recommends `sourceloop chrome launch` as the preferred NotebookLM browser setup. Shared or unknown browser profiles still work in this phase, but `doctor` and `status` will warn so operators do not treat them as the preferred setup.
 
 ## Vault Structure
 
@@ -172,11 +180,13 @@ pnpm install
 pnpm build
 pnpm link --global
 
+sourceloop init --ai codex
 sourceloop --help
 ```
 
 Reference docs:
 
 - [Architecture](./docs/architecture.md)
+- [LLM Playbook](./docs/llm-playbook.md)
 - [Tasks](./docs/tasks.md)
 - [Test Plan](./docs/test-plan.md)

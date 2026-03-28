@@ -436,7 +436,7 @@ async function launchProfileChrome(
   }
 }
 
-async function resolveChromeExecutablePath(customPath?: string): Promise<string> {
+export async function resolveChromeExecutablePath(customPath?: string): Promise<string> {
   const candidates = customPath
     ? [customPath]
     : process.platform === "darwin"
@@ -458,7 +458,7 @@ async function resolveChromeExecutablePath(customPath?: string): Promise<string>
   throw new Error("Could not resolve a Google Chrome executable path. Provide --chrome-path when registering the attach target.");
 }
 
-async function allocateFreePort(): Promise<number> {
+export async function allocateFreePort(): Promise<number> {
   return new Promise((resolve, reject) => {
     const server = net.createServer();
     server.on("error", reject);
@@ -480,7 +480,7 @@ async function allocateFreePort(): Promise<number> {
   });
 }
 
-async function waitForRemoteDebuggingEndpoint(endpoint: string, timeoutMs: number): Promise<void> {
+export async function waitForRemoteDebuggingEndpoint(endpoint: string, timeoutMs: number): Promise<void> {
   const deadline = Date.now() + timeoutMs;
 
   while (Date.now() < deadline) {

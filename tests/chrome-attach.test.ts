@@ -1,4 +1,4 @@
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -8,6 +8,7 @@ import {
   registerChromeEndpointTarget,
   registerChromeProfileTarget
 } from "../src/core/attach/manage-targets.js";
+import { attachCommand } from "../src/commands/attach.js";
 import { bindNotebook } from "../src/core/notebooks/bind-notebook.js";
 import { BrowserAgentNotebookRunnerAdapter } from "../src/core/notebooklm/browser-agent-adapter.js";
 import {
@@ -73,9 +74,87 @@ describe("Chrome attach targets", () => {
       expect.arrayContaining([profileTarget.target.id, endpointTarget.target.id])
     );
     expect(loadedProfile.target.targetType).toBe("profile");
+    expect(loadedProfile.target.profileIsolation).toBe("unknown");
+    expect(loadedProfile.target.ownership).toBe("user_managed");
+    expect(loadedProfile.target.notebooklmReadiness).toBe("unknown");
+    expect(endpointTarget.target.profileIsolation).toBe("unknown");
+    expect(endpointTarget.target.ownership).toBe("external");
     expect(markdown).toContain("type: chrome-target");
     expect(markdown).toContain("mode: profile");
     expect(markdown).toContain("Profile Directory:");
+    expect(markdown).toContain("Profile Isolation: unknown");
+    expect(markdown).toContain("Ownership: user_managed");
+    expect(markdown).toContain("NotebookLM Readiness: unknown");
+  });
+
+  it("loads legacy attach targets with conservative isolation defaults", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
+    await initializeWorkspace({ directory: workspaceRoot, force: false });
+
+    const legacyTargetPath = path.join(workspaceRoot, "vault", "chrome-targets", "attach-legacy.json");
+    await writeFile(
+      legacyTargetPath,
+      JSON.stringify(
+        {
+          id: "attach-legacy",
+          type: "chrome_attach_target",
+          name: "Legacy Chrome",
+          targetType: "remote_debugging_endpoint",
+          endpoint: "http://127.0.0.1:9222",
+          createdAt: new Date().toISOString()
+        },
+        null,
+        2
+      ) + "\n",
+      "utf8"
+    );
+
+    const loadedTarget = await loadChromeAttachTarget("attach-legacy", workspaceRoot);
+
+    expect(loadedTarget.target.profileIsolation).toBe("unknown");
+    expect(loadedTarget.target.ownership).toBe("external");
+    expect(loadedTarget.target.notebooklmReadiness).toBe("unknown");
+  });
+
+  it("persists NotebookLM readiness after successful attach validation", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
+    await initializeWorkspace({ directory: workspaceRoot, force: false });
+    process.chdir(workspaceRoot);
+
+    const attachTarget = await registerChromeEndpointTarget({
+      cwd: workspaceRoot,
+      name: "Validated Chrome",
+      endpoint: "http://127.0.0.1:9222"
+    });
+
+    const originalSessionFactory = (await import("../src/core/notebooklm/browser-agent.js")).defaultNotebookBrowserSessionFactory;
+    const browserAgentModule = await import("../src/core/notebooklm/browser-agent.js");
+    browserAgentModule.defaultNotebookBrowserSessionFactory.createSession = async () => ({
+      async preflight() {},
+      async askQuestion() {
+        throw new Error("unused");
+      },
+      async captureLatestAnswer() {
+        throw new Error("unused");
+      },
+      async createNotebook() {
+        throw new Error("unused");
+      },
+      async importSource() {
+        throw new Error("unused");
+      },
+      async close() {}
+    });
+
+    try {
+      await attachCommand.parseAsync(["validate", attachTarget.target.id], { from: "user" });
+    } finally {
+      browserAgentModule.defaultNotebookBrowserSessionFactory.createSession = originalSessionFactory.createSession;
+    }
+
+    const reloaded = await loadChromeAttachTarget(attachTarget.target.id, workspaceRoot);
+    expect(reloaded.target.notebooklmReadiness).toBe("validated");
+    expect(reloaded.target.notebooklmValidatedAt).toBeDefined();
   });
 
   it("reports structured validation failures for unreachable and unusable targets", async () => {
@@ -83,6 +162,8 @@ describe("Chrome attach targets", () => {
       id: "attach-unreachable",
       type: "chrome_attach_target",
       name: "Broken Endpoint",
+      profileIsolation: "unknown",
+      ownership: "external",
       targetType: "remote_debugging_endpoint",
       endpoint: "http://127.0.0.1:9333",
       createdAt: new Date().toISOString()

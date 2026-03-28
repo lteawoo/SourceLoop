@@ -4,9 +4,11 @@ import {
   loadChromeAttachTarget,
   registerChromeEndpointTarget,
   registerChromeProfileTarget,
-  removeChromeAttachTarget
+  removeChromeAttachTarget,
+  upsertChromeAttachTarget
 } from "../core/attach/manage-targets.js";
 import { validateChromeAttachTarget } from "../core/notebooklm/browser-agent.js";
+import { chromeProfileIsolationSchema } from "../schemas/attach.js";
 
 export const attachCommand = new Command("attach").description(
   "Register and inspect attached Chrome targets for NotebookLM execution"
@@ -17,6 +19,11 @@ attachCommand
   .description("Register a Chrome profile directory to launch and attach for NotebookLM runs")
   .requiredOption("--name <name>", "attach target name")
   .requiredOption("--profile-dir <path>", "Chrome user data directory that is already signed in")
+  .option(
+    "--profile-isolation <isolation>",
+    "Chrome profile isolation posture: isolated, unknown, or shared",
+    "unknown"
+  )
   .option("--chrome-path <path>", "explicit Google Chrome executable path")
   .option("--port <port>", "preferred remote debugging port for launched Chrome")
   .option("--launch-arg <arg...>", "additional Chrome launch arguments")
@@ -26,6 +33,7 @@ attachCommand
     async (options: {
       name: string;
       profileDir: string;
+      profileIsolation: string;
       chromePath?: string;
       port?: string;
       launchArg?: string[];
@@ -35,6 +43,7 @@ attachCommand
       const result = await registerChromeProfileTarget({
         name: options.name,
         profileDirPath: options.profileDir,
+        profileIsolation: chromeProfileIsolationSchema.parse(options.profileIsolation),
         launchArgs: options.launchArg ?? [],
         force: options.force,
         ...(options.chromePath ? { chromeExecutablePath: options.chromePath } : {}),
@@ -51,12 +60,18 @@ attachCommand
   .description("Register an existing Chrome remote debugging endpoint for NotebookLM runs")
   .requiredOption("--name <name>", "attach target name")
   .requiredOption("--endpoint <url>", "Chrome remote debugging endpoint, for example http://127.0.0.1:9222")
+  .option(
+    "--profile-isolation <isolation>",
+    "Chrome profile isolation posture behind the endpoint: isolated, unknown, or shared",
+    "unknown"
+  )
   .option("--description <description>", "target description")
   .option("--force", "overwrite an existing attach target with the same id", false)
-  .action(async (options: { name: string; endpoint: string; description?: string; force: boolean }) => {
+  .action(async (options: { name: string; endpoint: string; profileIsolation: string; description?: string; force: boolean }) => {
     const result = await registerChromeEndpointTarget({
       name: options.name,
       endpoint: options.endpoint,
+      profileIsolation: chromeProfileIsolationSchema.parse(options.profileIsolation),
       force: options.force,
       ...(options.description ? { description: options.description } : {})
     });
@@ -77,7 +92,7 @@ attachCommand
     for (const target of targets) {
       const summary =
         target.targetType === "profile" ? target.profileDirPath : target.endpoint;
-      process.stdout.write(`${target.id}\t${target.targetType}\t${summary}\n`);
+      process.stdout.write(`${target.id}\t${target.targetType}\t${target.profileIsolation}\t${summary}\n`);
     }
   });
 
@@ -105,6 +120,12 @@ attachCommand
     });
 
     if (result.ok) {
+      const validatedTarget = {
+        ...target,
+        notebooklmReadiness: "validated" as const,
+        notebooklmValidatedAt: new Date().toISOString()
+      };
+      await upsertChromeAttachTarget(validatedTarget);
       process.stdout.write(`Attach target ${targetId} is ready for NotebookLM execution.\n`);
       return;
     }
