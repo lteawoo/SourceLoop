@@ -19,6 +19,7 @@ export const topicCorpusManifestSchema = z.object({
   topicId: z.string().min(1),
   sourceIds: z.array(z.string().min(1)).default([]),
   notebookBindingIds: z.array(z.string().min(1)).default([]),
+  notebookSourceManifestIds: z.array(z.string().min(1)).default([]),
   runIds: z.array(z.string().min(1)).default([]),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime()

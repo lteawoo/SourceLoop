@@ -68,6 +68,7 @@ function buildWorkspaceConfig(): WorkspaceConfig {
       chromeTargets: "vault/chrome-targets",
       topics: "vault/topics",
       sources: "vault/sources",
+      notebookSources: "vault/notebook-sources",
       notebooks: "vault/notebooks",
       bundles: "vault/bundles",
       runs: "vault/runs",

@@ -15,8 +15,10 @@ import {
 } from "../../schemas/topic.js";
 import { sourceDocumentSchema } from "../../schemas/source.js";
 import { notebookBindingSchema } from "../../schemas/notebook.js";
+import { notebookSourceManifestSchema } from "../../schemas/notebook-source.js";
 import { runIndexSchema } from "../../schemas/run.js";
 import { makeAliases, makeTags, normalizeObsidianText } from "../../lib/obsidian.js";
+import { getNotebookSourceManifestNote } from "../vault/notes.js";
 
 export type CreateTopicInput = {
   name: string;
@@ -59,6 +61,7 @@ export async function createTopic(input: CreateTopicInput): Promise<CreateTopicR
     topicId,
     sourceIds: [],
     notebookBindingIds: [],
+    notebookSourceManifestIds: [],
     runIds: [],
     createdAt: now,
     updatedAt: now
@@ -110,18 +113,26 @@ export async function refreshTopicArtifacts(topicId: string, cwd?: string): Prom
   const vault = getVaultPaths(workspace);
   const topicPaths = getTopicPaths(workspace, topicId);
   const current = await loadTopic(topicId, cwd);
-  const [sources, notebookBindings, runs] = await Promise.all([
+  const [sources, notebookBindings, notebookSources, runs] = await Promise.all([
     loadSourceArtifacts(vault.sourcesDir),
     loadNotebookBindings(vault.notebooksDir),
+    loadNotebookSourceManifests(vault.notebookSourcesDir),
     loadRunIndexes(vault.runsDir)
   ]);
 
   const sourceIds = sources.filter((source) => source.topicId === topicId).map((source) => source.id).sort();
   const notebookBindingIds = notebookBindings.filter((binding) => binding.topicId === topicId).map((binding) => binding.id).sort();
+  const notebookSourceManifestIds = notebookSources
+    .filter(
+      (manifest) => manifest.topicId === topicId && notebookBindingIds.includes(manifest.notebookBindingId)
+    )
+    .map((manifest) => manifest.id)
+    .sort();
   const topicRuns = runs.filter((run) => run.topicId === topicId);
   const runIds = topicRuns.map((run) => run.id).sort();
   const status = deriveTopicStatus({
     sourceCount: sourceIds.length,
+    notebookSourceManifestCount: notebookSourceManifestIds.length,
     notebookBindingCount: notebookBindingIds.length,
     runs: topicRuns
   });
@@ -136,6 +147,7 @@ export async function refreshTopicArtifacts(topicId: string, cwd?: string): Prom
     ...current.corpus,
     sourceIds,
     notebookBindingIds,
+    notebookSourceManifestIds,
     runIds,
     updatedAt: now
   });
@@ -146,6 +158,7 @@ export async function refreshTopicArtifacts(topicId: string, cwd?: string): Prom
 
 function deriveTopicStatus(input: {
   sourceCount: number;
+  notebookSourceManifestCount: number;
   notebookBindingCount: number;
   runs: Array<ReturnType<typeof runIndexSchema.parse>>;
 }): TopicStatus {
@@ -159,10 +172,11 @@ function deriveTopicStatus(input: {
   ) {
     return "researched";
   }
-  if (input.sourceCount > 0 && input.notebookBindingCount > 0) {
+  const evidenceCount = input.sourceCount + input.notebookSourceManifestCount;
+  if (evidenceCount > 0 && input.notebookBindingCount > 0) {
     return "ready_for_planning";
   }
-  if (input.sourceCount > 0 || input.notebookBindingCount > 0) {
+  if (evidenceCount > 0 || input.notebookBindingCount > 0) {
     return "collecting_sources";
   }
   return "initialized";
@@ -224,15 +238,28 @@ async function buildCorpusMarkdown(
 ): Promise<string> {
   const title = `${normalizeObsidianText(topic.name, topic.id)} Corpus`;
   const vault = getVaultPaths(workspace);
-  const [sources, notebooks, runs] = await Promise.all([
+  const [sources, notebooks, notebookSources, runs] = await Promise.all([
     loadSourceArtifacts(vault.sourcesDir),
     loadNotebookBindings(vault.notebooksDir),
+    loadNotebookSourceManifests(vault.notebookSourcesDir),
     loadRunIndexes(vault.runsDir)
   ]);
   const sourceLinks = corpus.sourceIds
     .map((id) => sources.find((source) => source.id === id))
     .filter((source): source is (typeof sources)[number] => Boolean(source))
     .map((source) => `- ${toWikiLink(workspace, getSourceNote(workspace, source).absolutePath, normalizeObsidianText(source.title, source.id))}`)
+    .join("\n");
+  const notebookSourceLinks = corpus.notebookSourceManifestIds
+    .map((id) => notebookSources.find((manifest) => manifest.id === id))
+    .filter((manifest): manifest is (typeof notebookSources)[number] => Boolean(manifest))
+    .map(
+      (manifest) =>
+        `- ${toWikiLink(
+          workspace,
+          getNotebookSourceManifestNote(workspace, manifest).absolutePath,
+          normalizeObsidianText(manifest.title, manifest.id)
+        )}`
+    )
     .join("\n");
   const notebookLinks = corpus.notebookBindingIds
     .map((id) => notebooks.find((binding) => binding.id === id))
@@ -257,8 +284,11 @@ async function buildCorpusMarkdown(
     },
     `# ${title}
 
-## Sources
+## Local Sources
 ${sourceLinks || "- none"}
+
+## Notebook-backed Sources
+${notebookSourceLinks || "- none"}
 
 ## Notebook Bindings
 ${notebookLinks || "- none"}
@@ -276,6 +306,11 @@ async function loadSourceArtifacts(sourcesDir: string) {
 async function loadNotebookBindings(notebooksDir: string) {
   const files = await readJsonFiles(notebooksDir);
   return files.map((raw) => notebookBindingSchema.parse(JSON.parse(raw)));
+}
+
+async function loadNotebookSourceManifests(notebookSourcesDir: string) {
+  const files = await readJsonFiles(notebookSourcesDir);
+  return files.map((raw) => notebookSourceManifestSchema.parse(JSON.parse(raw)));
 }
 
 async function loadRunIndexes(runsDir: string) {

@@ -17,6 +17,7 @@ import { toFrontmatterMarkdown } from "../ingest/frontmatter.js";
 import { writeJsonFile } from "../../lib/write-json.js";
 import { loadTopic, refreshTopicArtifacts } from "../topics/manage-topics.js";
 import { loadChromeAttachTarget } from "../attach/manage-targets.js";
+import { listNotebookSourceManifests } from "../notebooks/manage-notebook-source-manifests.js";
 import { makeAliases, makeTags, normalizeObsidianText, summarizeQuestionTitle } from "../../lib/obsidian.js";
 import { getExchangeNoteFromArtifact, getNotebookNote, getQuestionsNote, getRunIndexNote, getTopicIndexNote, toWikiLink } from "../vault/notes.js";
 import { buildRunIndexMarkdown } from "./render-run-note.js";
@@ -246,8 +247,17 @@ async function preflightTopicContext(
     throw new Error(`Topic ${run.topicId} corpus does not include notebook binding ${binding.id}. Refresh or re-bind the notebook.`);
   }
 
-  if (corpus.sourceIds.length === 0) {
-    throw new Error(`Topic ${run.topicId} has no sources in its corpus. Ingest topic-backed material before running NotebookLM questions.`);
+  const notebookSourceManifests = await listNotebookSourceManifests(cwd);
+  const matchingNotebookEvidenceCount = notebookSourceManifests.filter(
+    (manifest) =>
+      corpus.notebookSourceManifestIds.includes(manifest.id) &&
+      manifest.notebookBindingId === binding.id
+  ).length;
+  const evidenceCount = corpus.sourceIds.length + matchingNotebookEvidenceCount;
+  if (evidenceCount === 0) {
+    throw new Error(
+      `Topic ${run.topicId} has no declared evidence aligned to notebook binding ${binding.id}. Ingest topic-backed material or declare a notebook-source manifest for this notebook before running NotebookLM questions.`
+    );
   }
 }
 

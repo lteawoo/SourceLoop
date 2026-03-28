@@ -15,6 +15,7 @@ import { toFrontmatterMarkdown } from "../ingest/frontmatter.js";
 import { writeJsonFile } from "../../lib/write-json.js";
 import { slugify } from "../../lib/slugify.js";
 import { loadNotebookBinding } from "./load-artifacts.js";
+import { listNotebookSourceManifests } from "../notebooks/manage-notebook-source-manifests.js";
 import { loadTopic, refreshTopicArtifacts } from "../topics/manage-topics.js";
 import { loadChromeAttachTarget } from "../attach/manage-targets.js";
 import { getVaultPaths } from "../vault/paths.js";
@@ -57,6 +58,9 @@ export async function createQuestionPlan(
   }
 
   const { binding } = await loadNotebookBinding(notebookBindingId, input.cwd);
+  if (topicRecord) {
+    await preflightTopicPlanningContext(topicRecord.corpus, binding, input.cwd);
+  }
   const timestamp = new Date();
   const createdAt = timestamp.toISOString();
   const topicName = normalizeObsidianText(topicRecord?.topic.name ?? input.topic ?? binding.topic);
@@ -133,6 +137,34 @@ export async function createQuestionPlan(
     runMarkdownPath: runNote.absolutePath,
     questionsMarkdownPath: questionsNote.absolutePath
   };
+}
+
+async function preflightTopicPlanningContext(
+  corpus: Awaited<ReturnType<typeof loadTopic>>["corpus"],
+  binding: Awaited<ReturnType<typeof loadNotebookBinding>>["binding"],
+  cwd?: string
+) {
+  if (binding.topicId && binding.topicId !== corpus.topicId) {
+    throw new Error(
+      `Notebook binding ${binding.id} belongs to ${binding.topicId}, not topic ${corpus.topicId}.`
+    );
+  }
+  if (!corpus.notebookBindingIds.includes(binding.id)) {
+    throw new Error(`Topic ${corpus.topicId} corpus does not include notebook binding ${binding.id}. Refresh or re-bind the notebook.`);
+  }
+
+  const notebookSourceManifests = await listNotebookSourceManifests(cwd);
+  const matchingNotebookEvidenceCount = notebookSourceManifests.filter(
+    (manifest) =>
+      corpus.notebookSourceManifestIds.includes(manifest.id) &&
+      manifest.notebookBindingId === binding.id
+  ).length;
+  const evidenceCount = corpus.sourceIds.length + matchingNotebookEvidenceCount;
+  if (evidenceCount === 0) {
+    throw new Error(
+      `Topic ${corpus.topicId} has no declared evidence aligned to notebook binding ${binding.id}. Ingest topic-backed material or declare a notebook-source manifest for this notebook before planning NotebookLM questions.`
+    );
+  }
 }
 
 function buildRunId(topic: string, timestamp: Date): string {

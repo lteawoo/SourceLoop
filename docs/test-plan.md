@@ -98,19 +98,9 @@ Expected topic id:
 topic-professional-web-design-with-claude-code
 ```
 
-### 3. Add a local source anchor
+### 3. Prepare the existing NotebookLM source bundle
 
-NotebookLM may already contain the real YouTube source. The current SourceLoop workflow still expects one local topic source note.
-
-Run:
-
-```bash
-echo 'NotebookLM already contains the YouTube sources for "Professional Web Design with Claude Code".' > notebooklm-manifest.md
-
-node /Users/twlee/projects/SourceLoop/dist/index.js ingest \
-  notebooklm-manifest.md \
-  --topic topic-professional-web-design-with-claude-code
-```
+NotebookLM may already contain the real YouTube source. In the preferred flow, declare that notebook-backed source bundle after the notebook binding is created instead of creating a fake local note.
 
 ### 4. Launch Chrome manually with remote debugging
 
@@ -186,7 +176,20 @@ node /Users/twlee/projects/SourceLoop/dist/index.js notebook-bind \
   --attach-target attach-test-chrome
 ```
 
-### 8. Create a question plan
+### 8. Declare the notebook-backed source bundle
+
+Run:
+
+```bash
+node /Users/twlee/projects/SourceLoop/dist/index.js notebook-source declare \
+  --topic-id topic-professional-web-design-with-claude-code \
+  --notebook notebook-claude-code-web-design \
+  --kind youtube-playlist \
+  --title "Professional Web Design with Claude Code source set" \
+  --ref "https://youtube.com/playlist?list=<real-playlist-id>"
+```
+
+### 9. Create a question plan
 
 Run:
 
@@ -206,7 +209,7 @@ node /Users/twlee/projects/SourceLoop/dist/index.js plan \
   --families core,execution
 ```
 
-### 9. Run NotebookLM end to end
+### 10. Run NotebookLM end to end
 
 Run:
 
@@ -239,7 +242,7 @@ node /Users/twlee/projects/SourceLoop/dist/index.js run <run-id> \
   --show-browser
 ```
 
-### 10. Import the latest existing NotebookLM answer without asking a new question
+### 11. Import the latest existing NotebookLM answer without asking a new question
 
 Use this when a reply already exists in NotebookLM and you want to backfill the latest answer into the run archive.
 
@@ -262,7 +265,7 @@ Check:
 - the latest visible NotebookLM answer is archived
 - a new exchange note or updated next-question exchange appears in `vault/runs/<run-id>/exchanges/`
 
-### 11. Inspect the archive
+### 12. Inspect the archive
 
 Run:
 
@@ -276,7 +279,7 @@ cat /Users/twlee/projects/SourceLoop/tmp/demo-workspace/vault/runs/<run-id>/prof
 ls /Users/twlee/projects/SourceLoop/tmp/demo-workspace/vault/runs/<run-id>/exchanges
 ```
 
-### 12. Open in Obsidian
+### 13. Open in Obsidian
 
 Open this folder in Obsidian:
 

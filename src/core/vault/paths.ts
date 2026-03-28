@@ -11,6 +11,7 @@ export function getVaultPaths(workspace: LoadedWorkspace) {
     chromeTargetsDir: path.join(vaultRoot, "chrome-targets"),
     topicsDir: path.join(vaultRoot, "topics"),
     sourcesDir: path.join(vaultRoot, "sources"),
+    notebookSourcesDir: path.join(vaultRoot, "notebook-sources"),
     notebooksDir: path.join(vaultRoot, "notebooks"),
     runsDir: path.join(vaultRoot, "runs"),
     outputsDir: path.join(vaultRoot, "outputs")
