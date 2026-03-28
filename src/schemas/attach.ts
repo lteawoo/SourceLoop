@@ -21,6 +21,7 @@ export const chromeProfileAttachTargetSchema = attachTargetBaseSchema.extend({
   ownership: chromeAttachOwnershipSchema.exclude(["external"]).default("user_managed"),
   profileDirPath: z.string().min(1),
   chromeExecutablePath: z.string().min(1).optional(),
+  currentProcessId: z.number().int().positive().optional(),
   launchArgs: z.array(z.string()).default([]),
   remoteDebuggingPort: z.number().int().positive().optional()
 });

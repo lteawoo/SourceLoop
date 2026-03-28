@@ -97,23 +97,25 @@ Use this skill when the current project is a SourceLoop workspace.
 
 ## Core loop
 
-1. Run \`sourceloop status --json\`
-2. Run \`sourceloop doctor --json\`
-3. Fix blocking prerequisites before planning or running
-4. Prepare the managed browser before notebook creation or execution
-5. Choose the kickoff path:
+1. If the workspace is not bootstrapped yet, run \`sourceloop init --ai <codex|claude|gemini>\`
+2. Run \`sourceloop status --json\`
+3. Run \`sourceloop doctor --json\`
+4. Fix blocking prerequisites before planning or running
+5. Prepare the managed browser before notebook creation or execution
+6. Choose the kickoff path:
    - no topic provided
    - topic only
    - topic plus sources
    - existing NotebookLM URL
-6. Prepare notebook before evidence import or declaration
-7. Require usable evidence before planning
-8. Execution defaults:
+7. Prepare notebook before evidence import or declaration
+8. Require usable evidence before planning
+9. Execution defaults:
    - planning defaults to 10 questions unless the user asked for a different count
    - once a 10-question batch is planned, prefer running the full batch unless the user explicitly asked for a smaller partial pass
-9. Re-check \`status --json\` after each meaningful step
-10. If a NotebookLM step may take a while, say so briefly before waiting
-11. If a run command already has a chosen \`--limit\`, let that command finish its full requested scope before asking what to do next
+10. Re-check \`status --json\` after each meaningful step
+11. If a NotebookLM step may take a while, say so briefly before waiting
+12. If a run command already has a chosen \`--limit\`, let that command finish its full requested scope before asking what to do next
+13. While waiting on login, permission, or NotebookLM entry readiness, do not fill the gap with outside summaries, source analysis, or speculative prep work
 
 ## NotebookLM entry rules
 
@@ -123,6 +125,7 @@ Use this skill when the current project is a SourceLoop workspace.
   - create/bind flow is reachable
 - If these checks fail, do not wander through the UI.
 - Stop and ask the user to fix login, permissions, or landing-page state.
+- While blocked on login or NotebookLM entry readiness, do not switch to summarizing sources, collecting web material, or drafting answer content in parallel.
 - If only another Chrome is available, do not silently continue on that path.
 - Ask the user whether to keep going with that Chrome or switch back to the SourceLoop browser first.
 
@@ -157,8 +160,10 @@ Use this skill when the current project is a SourceLoop workspace.
 - No topic: \`sourceloop topic create ...\`
 - User asked to start research without a topic: ask which topic to research before doing anything else
 - When asking for the topic, also mention that the default planned question count is 10 and the user can override it
+- Workspace not bootstrapped yet: \`sourceloop init --ai <codex|claude|gemini>\`
 - No trusted isolated Chrome target: \`sourceloop chrome launch\`
 - Treat \`sourceloop chrome launch\` as the visible setup step for login and first NotebookLM checks
+- If a stale SourceLoop-managed browser needs to be cleaned up directly: \`sourceloop chrome close <target>\`
 - Managed isolated Chrome target exists but is not validated yet: \`sourceloop attach validate <target>\`
 - Topic only and no notebook yet: \`sourceloop notebook-create ...\` then ask for source inputs
 - Topic plus sources and no notebook yet: \`sourceloop notebook-create ...\`
@@ -170,6 +175,7 @@ Use this skill when the current project is a SourceLoop workspace.
 - Planned or incomplete run: \`sourceloop run ... --json\`
 - Existing latest answer only: \`sourceloop import-latest ...\`
 - Treat \`--limit\` as the execution scope for one run command. Do not stop halfway through that requested limit just to ask again.
+- After \`run\` or \`import-latest\` finishes generating the requested answer output, the SourceLoop-managed Chrome should be closed.
 
 ## Safety
 
@@ -179,11 +185,13 @@ Use this skill when the current project is a SourceLoop workspace.
 - Do not silently fall back to another Chrome session
 - Ask the user before continuing with a non-SourceLoop browser
 - Do not autonomously search the web or choose source materials unless the user explicitly asked you to find sources
+- Do not do sidecar source analysis or answer drafting while waiting for the user to finish NotebookLM login or other entry blockers
 - Do not run \`plan\` without usable evidence
 - Do not run \`run\` without a notebook binding and planned run
 - Do not use \`--question-id\` and \`--from-question\` together
 - Do not impose a partial run limit by default when the planned batch should be executed end to end
 - Do not turn bounded execution into per-question interruptions unless the user explicitly asked for checkpoint-style approval
+- Do not leave a SourceLoop-managed Chrome running after answer generation finishes unless the user explicitly asked to keep it open
 
 For the full operator flow, read [references/playbook.md](references/playbook.md).
 `;
@@ -194,17 +202,18 @@ function buildCodexPlaybookReference(): string {
 
 ## Preferred order
 
-1. \`sourceloop status --json\`
-2. \`sourceloop doctor --json\`
-3. topic preparation
-4. managed isolated Chrome / NotebookLM session preparation
-5. \`chrome launch\`
-6. \`attach validate\`
-7. \`notebook-create\` or \`notebook-bind\`
-8. \`ingest\`, \`notebook-import\`, or \`notebook-source declare\`
-9. \`status --json\` and \`doctor --json\` again
-10. \`plan --max-questions 10 --json\`
-11. \`run --json\`
+1. \`sourceloop init --ai <codex|claude|gemini>\` when the workspace has not been bootstrapped yet
+2. \`sourceloop status --json\`
+3. \`sourceloop doctor --json\`
+4. topic preparation
+5. managed isolated Chrome / NotebookLM session preparation
+6. \`chrome launch\`
+7. \`attach validate\`
+8. \`notebook-create\` or \`notebook-bind\`
+9. \`ingest\`, \`notebook-import\`, or \`notebook-source declare\`
+10. \`status --json\` and \`doctor --json\` again
+11. \`plan --max-questions 10 --json\`
+12. \`run --json\`
 
 ## Start conditions
 
@@ -223,6 +232,7 @@ The operator should classify the user's first request into one of these:
   - create or bind flow is reachable
 - If any of these checks fail, do not explore the UI further.
 - Stop and ask the user to fix login, permissions, or landing-page state.
+- While blocked on login or NotebookLM entry readiness, do not switch to summarizing sources, collecting web material, or drafting answer content in parallel.
 - If only another Chrome is available, do not silently continue on that path.
 - Ask the user whether to keep going with that Chrome or switch back to the SourceLoop browser first.
 
@@ -231,6 +241,7 @@ The operator should classify the user's first request into one of these:
 - If doctor has errors, resolve them first.
 - Prefer \`sourceloop chrome launch\` so NotebookLM research uses a SourceLoop-managed isolated profile instead of a shared default browser profile.
 - Use \`chrome launch\` as the visible setup step, then keep later notebook actions hidden unless you need \`--show-browser\` for debugging.
+- Use \`sourceloop chrome close <target>\` when a stale SourceLoop-managed browser should be closed directly.
 - Prefer URL-less \`sourceloop attach validate <target>\` before notebook creation when only NotebookLM home readiness is needed.
 - If the user did not provide a topic, ask for the topic first and mention that planning defaults to 10 questions unless they want another count.
 - If no trusted isolated Chrome target exists, launch browser state before notebook actions.
@@ -243,6 +254,8 @@ The operator should classify the user's first request into one of these:
 - If the user planned 10 questions and did not ask for a partial pass, run the full remaining batch instead of adding a default \`--limit\`.
 - If you already chose a bounded run command such as \`run --limit 1\`, let that command complete before asking whether to continue with another run.
 - Tell the user that NotebookLM actions can take a bit before you wait on them, and if the wait becomes long, ask whether to keep waiting or just report the current state.
+- While blocked on login, permission prompts, or NotebookLM entry readiness, wait on that blocker only instead of doing outside source analysis in parallel.
+- After \`run\` or \`import-latest\` completes and the requested answer output has been generated, the SourceLoop-managed Chrome should be closed automatically unless the user explicitly asked to keep it open.
 `;
 }
 
@@ -296,20 +309,21 @@ Use this skill when the current project is a SourceLoop workspace.
 
 ## Core loop
 
-1. Run \`sourceloop status --json\`
-2. Run \`sourceloop doctor --json\`
-3. Fix blocking prerequisites before planning or running
-4. Prepare the managed browser before notebook creation or execution
-5. Choose the kickoff path:
+1. If the workspace is not bootstrapped yet, run \`sourceloop init --ai <codex|claude|gemini>\`
+2. Run \`sourceloop status --json\`
+3. Run \`sourceloop doctor --json\`
+4. Fix blocking prerequisites before planning or running
+5. Prepare the managed browser before notebook creation or execution
+6. Choose the kickoff path:
    - no topic provided
    - topic only
    - topic plus sources
    - existing NotebookLM URL
-6. Prepare notebook before evidence import or declaration
-7. Require usable evidence before planning
-8. Planning defaults to 10 questions unless the user asked for another count
-9. Once a 10-question batch is planned, prefer running the full batch unless the user explicitly asked for a smaller partial pass
-10. Re-check \`sourceloop status --json\` after each meaningful step
+7. Prepare notebook before evidence import or declaration
+8. Require usable evidence before planning
+9. Planning defaults to 10 questions unless the user asked for another count
+10. Once a 10-question batch is planned, prefer running the full batch unless the user explicitly asked for a smaller partial pass
+11. Re-check \`sourceloop status --json\` after each meaningful step
 
 ## NotebookLM entry rules
 
@@ -319,12 +333,15 @@ Use this skill when the current project is a SourceLoop workspace.
   - create or bind flow is reachable
 - If these checks fail, do not wander through the UI.
 - Stop and ask the user to fix login, permissions, or landing-page state.
+- While blocked on login or NotebookLM entry readiness, do not switch to summarizing sources, collecting web material, or drafting answer content in parallel.
 - If only another Chrome is available, do not silently continue on that path.
 - Ask the user whether to keep going with that Chrome or switch back to the SourceLoop browser first.
 
 ## Command selection
 
+- Workspace not bootstrapped yet: \`sourceloop init --ai <codex|claude|gemini>\`
 - No trusted isolated Chrome target: \`sourceloop chrome launch\`
+- If a stale SourceLoop-managed browser needs to be cleaned up directly: \`sourceloop chrome close <target>\`
 - Managed isolated Chrome target exists but is not validated yet: \`sourceloop attach validate <target>\`
 - Topic only and no notebook yet: \`sourceloop notebook-create ...\`, then ask which sources to import
 - Topic plus sources and no notebook yet: \`sourceloop notebook-create ...\`, then import the provided files or URLs
@@ -334,6 +351,7 @@ Use this skill when the current project is a SourceLoop workspace.
 - Ready topic with no run: \`sourceloop plan ... --max-questions 10 --json\`
 - Planned or incomplete run: \`sourceloop run ... --json\`
 - Existing latest answer only: \`sourceloop import-latest ...\`
+- After \`run\` or \`import-latest\` finishes generating the requested answer output, the SourceLoop-managed Chrome should be closed.
 
 ## Safety
 
@@ -342,10 +360,12 @@ Use this skill when the current project is a SourceLoop workspace.
 - Treat shared or unknown Chrome profile isolation as a warning that should be surfaced before more NotebookLM work
 - Do not silently fall back to another Chrome session
 - Do not autonomously search the web or choose source materials unless the user explicitly asked you to find sources
+- Do not do sidecar source analysis or answer drafting while waiting for the user to finish NotebookLM login or other entry blockers
 - Do not run \`plan\` without usable evidence
 - Do not run \`run\` without a notebook binding and planned run
 - Do not use \`--question-id\` and \`--from-question\` together
 - Do not impose a partial run limit by default when the planned batch should be executed end to end
+- Do not leave a SourceLoop-managed Chrome running after answer generation finishes unless the user explicitly asked to keep it open
 
 For the full operator flow, read [references/playbook.md](references/playbook.md).
 `;
@@ -361,20 +381,21 @@ Use this skill when the current project is a SourceLoop workspace.
 
 ## Core loop
 
-1. Run \`sourceloop status --json\`
-2. Run \`sourceloop doctor --json\`
-3. Fix blocking prerequisites before planning or running
-4. Prepare the managed browser before notebook creation or execution
-5. Choose the kickoff path:
+1. If the workspace is not bootstrapped yet, run \`sourceloop init --ai <codex|claude|gemini>\`
+2. Run \`sourceloop status --json\`
+3. Run \`sourceloop doctor --json\`
+4. Fix blocking prerequisites before planning or running
+5. Prepare the managed browser before notebook creation or execution
+6. Choose the kickoff path:
    - no topic provided
    - topic only
    - topic plus sources
    - existing NotebookLM URL
-6. Prepare notebook before evidence import or declaration
-7. Require usable evidence before planning
-8. Planning defaults to 10 questions unless the user asked for another count
-9. Once a 10-question batch is planned, prefer running the full batch unless the user explicitly asked for a smaller partial pass
-10. Re-check \`sourceloop status --json\` after each meaningful step
+7. Prepare notebook before evidence import or declaration
+8. Require usable evidence before planning
+9. Planning defaults to 10 questions unless the user asked for another count
+10. Once a 10-question batch is planned, prefer running the full batch unless the user explicitly asked for a smaller partial pass
+11. Re-check \`sourceloop status --json\` after each meaningful step
 
 ## NotebookLM entry rules
 
@@ -384,12 +405,15 @@ Use this skill when the current project is a SourceLoop workspace.
   - create or bind flow is reachable
 - If these checks fail, do not wander through the UI.
 - Stop and ask the user to fix login, permissions, or landing-page state.
+- While blocked on login or NotebookLM entry readiness, do not switch to summarizing sources, collecting web material, or drafting answer content in parallel.
 - If only another Chrome is available, do not silently continue on that path.
 - Ask the user whether to keep going with that Chrome or switch back to the SourceLoop browser first.
 
 ## Command selection
 
+- Workspace not bootstrapped yet: \`sourceloop init --ai <codex|claude|gemini>\`
 - No trusted isolated Chrome target: \`sourceloop chrome launch\`
+- If a stale SourceLoop-managed browser needs to be cleaned up directly: \`sourceloop chrome close <target>\`
 - Managed isolated Chrome target exists but is not validated yet: \`sourceloop attach validate <target>\`
 - Topic only and no notebook yet: \`sourceloop notebook-create ...\`, then ask which sources to import
 - Topic plus sources and no notebook yet: \`sourceloop notebook-create ...\`, then import the provided files or URLs
@@ -399,6 +423,7 @@ Use this skill when the current project is a SourceLoop workspace.
 - Ready topic with no run: \`sourceloop plan ... --max-questions 10 --json\`
 - Planned or incomplete run: \`sourceloop run ... --json\`
 - Existing latest answer only: \`sourceloop import-latest ...\`
+- After \`run\` or \`import-latest\` finishes generating the requested answer output, the SourceLoop-managed Chrome should be closed.
 
 ## Safety
 
@@ -407,10 +432,12 @@ Use this skill when the current project is a SourceLoop workspace.
 - Treat shared or unknown Chrome profile isolation as a warning that should be surfaced before more NotebookLM work
 - Do not silently fall back to another Chrome session
 - Do not autonomously search the web or choose source materials unless the user explicitly asked you to find sources
+- Do not do sidecar source analysis or answer drafting while waiting for the user to finish NotebookLM login or other entry blockers
 - Do not run \`plan\` without usable evidence
 - Do not run \`run\` without a notebook binding and planned run
 - Do not use \`--question-id\` and \`--from-question\` together
 - Do not impose a partial run limit by default when the planned batch should be executed end to end
+- Do not leave a SourceLoop-managed Chrome running after answer generation finishes unless the user explicitly asked to keep it open
 
 For the full operator flow, read [references/playbook.md](references/playbook.md).
 `;
@@ -421,32 +448,36 @@ function buildSharedPlaybookReference(): string {
 
 ## Preferred order
 
-1. \`sourceloop status --json\`
-2. \`sourceloop doctor --json\`
-3. topic preparation
-4. managed isolated Chrome / NotebookLM session preparation
-5. \`chrome launch\`
-6. \`attach validate\`
-7. \`notebook-create\` or \`notebook-bind\`
-8. \`ingest\`, \`notebook-import\`, or \`notebook-source declare\`
-9. \`status --json\` and \`doctor --json\` again
-10. \`plan --max-questions 10 --json\`
-11. \`run --json\`
+1. \`sourceloop init --ai <codex|claude|gemini>\` when the workspace has not been bootstrapped yet
+2. \`sourceloop status --json\`
+3. \`sourceloop doctor --json\`
+4. topic preparation
+5. managed isolated Chrome / NotebookLM session preparation
+6. \`chrome launch\`
+7. \`attach validate\`
+8. \`notebook-create\` or \`notebook-bind\`
+9. \`ingest\`, \`notebook-import\`, or \`notebook-source declare\`
+10. \`status --json\` and \`doctor --json\` again
+11. \`plan --max-questions 10 --json\`
+12. \`run --json\`
 
 ## Decision rules
 
 - If doctor has errors, resolve them first.
 - Prefer \`sourceloop chrome launch\` so NotebookLM research uses a SourceLoop-managed isolated profile instead of a shared default browser profile.
+- Use \`sourceloop chrome close <target>\` when a stale SourceLoop-managed browser should be closed directly.
 - Prefer URL-less \`sourceloop attach validate <target>\` before notebook creation when only NotebookLM home readiness is needed.
 - If the user did not provide a topic, ask for the topic first and mention that planning defaults to 10 questions unless they want another count.
 - If no trusted isolated Chrome target exists, launch browser state before notebook actions.
 - If only another Chrome is available, ask the user whether to keep going with that Chrome before using it.
+- If NotebookLM login or entry readiness is blocking the workflow, do not spend that waiting time producing outside source summaries or speculative answer drafts.
 - If the user provided only a topic, confirm the question count, create a managed notebook, and ask which sources to import.
 - If the user did not provide sources, do not search for or choose source materials unless the user explicitly asked you to find sources.
 - If the user provided topic plus sources, create a managed notebook and import those sources.
 - If the user provided a NotebookLM URL, bind the existing notebook and continue from its source state.
 - If a run already exists, resume it before creating a new pass.
 - If the user planned 10 questions and did not ask for a partial pass, run the full remaining batch instead of adding a default \`--limit\`.
+- After \`run\` or \`import-latest\` completes and the requested answer output has been generated, the SourceLoop-managed Chrome should be closed automatically unless the user explicitly asked to keep it open.
 `;
 }
 

@@ -1,5 +1,7 @@
 import { mkdir } from "node:fs/promises";
+import { execFile } from "node:child_process";
 import { spawn, type ChildProcess } from "node:child_process";
+import { promisify } from "node:util";
 import path from "node:path";
 import { getVaultPaths } from "../vault/paths.js";
 import { loadWorkspace } from "../workspace/load-workspace.js";
@@ -7,7 +9,8 @@ import { slugify } from "../../lib/slugify.js";
 import {
   loadChromeAttachTarget,
   registerChromeProfileTarget,
-  type RegisterChromeAttachTargetResult
+  type RegisterChromeAttachTargetResult,
+  upsertChromeAttachTarget
 } from "./manage-targets.js";
 import {
   allocateFreePort,
@@ -33,7 +36,13 @@ export type LaunchManagedChromeResult = RegisterChromeAttachTargetResult & {
   reusedTarget: boolean;
 };
 
-type SpawnedChromeProcess = Pick<ChildProcess, "kill" | "unref">;
+export type CloseManagedChromeResult = {
+  targetId: string;
+  closed: boolean;
+  processId?: number;
+};
+
+type SpawnedChromeProcess = Pick<ChildProcess, "kill" | "unref" | "pid">;
 
 type LaunchManagedChromeDeps = {
   resolveChromeExecutablePath: typeof resolveChromeExecutablePath;
@@ -41,6 +50,15 @@ type LaunchManagedChromeDeps = {
   waitForRemoteDebuggingEndpoint: typeof waitForRemoteDebuggingEndpoint;
   spawnChromeProcess: (executablePath: string, args: string[]) => SpawnedChromeProcess;
 };
+
+type CloseManagedChromeDeps = {
+  loadChromeAttachTarget: typeof loadChromeAttachTarget;
+  upsertChromeAttachTarget: typeof upsertChromeAttachTarget;
+  findRunningProcessId: (target: ChromeProfileAttachTarget) => Promise<number | undefined>;
+  terminateProcess: (processId: number) => Promise<boolean>;
+};
+
+const execFileAsync = promisify(execFile);
 
 const defaultDeps: LaunchManagedChromeDeps = {
   resolveChromeExecutablePath,
@@ -52,6 +70,13 @@ const defaultDeps: LaunchManagedChromeDeps = {
       stdio: "ignore"
     });
   }
+};
+
+const defaultCloseDeps: CloseManagedChromeDeps = {
+  loadChromeAttachTarget,
+  upsertChromeAttachTarget,
+  findRunningProcessId: findManagedChromeProcessId,
+  terminateProcess: terminateManagedChromeProcess
 };
 
 export async function launchManagedChrome(
@@ -101,6 +126,8 @@ export async function launchManagedChrome(
           launchArgs: input.launchArgs ?? reusableTarget.launchArgs,
           description: input.description ?? reusableTarget.description,
           createdAt: reusableTarget.createdAt,
+          currentProcessId:
+            reusableTarget.currentProcessId ?? (await findManagedChromeProcessId(reusableTarget)),
           notebooklmReadiness: reusableTarget.notebooklmReadiness,
           notebooklmValidatedAt: reusableTarget.notebooklmValidatedAt,
           force: true
@@ -145,6 +172,7 @@ export async function launchManagedChrome(
       name,
       profileDirPath,
       executablePath,
+      currentProcessId: toChildProcessId(processHandle.pid),
       remoteDebuggingPort,
       launchArgs: input.launchArgs ?? reusableTarget?.launchArgs,
       description: input.description ?? reusableTarget?.description,
@@ -162,6 +190,51 @@ export async function launchManagedChrome(
     launched: true,
     reusedTarget: Boolean(reusableTarget)
   };
+}
+
+export async function closeManagedChrome(
+  input: { targetId: string; cwd?: string },
+  deps: CloseManagedChromeDeps = defaultCloseDeps
+): Promise<CloseManagedChromeResult> {
+  const { target } = await deps.loadChromeAttachTarget(input.targetId, input.cwd);
+
+  if (!isSourceLoopManagedLaunchTarget(target)) {
+    throw new Error(`Attach target ${input.targetId} is not a SourceLoop-managed isolated Chrome profile.`);
+  }
+
+  const processId = target.currentProcessId ?? (await deps.findRunningProcessId(target));
+  const closed = processId ? await deps.terminateProcess(processId) : false;
+
+  await deps.upsertChromeAttachTarget(
+    stripCurrentProcessId(target),
+    {
+      force: true,
+      ...(input.cwd ? { cwd: input.cwd } : {})
+    }
+  );
+
+  return {
+    targetId: target.id,
+    closed,
+    ...(processId ? { processId } : {})
+  };
+}
+
+export async function closeManagedChromeIfOwnedTarget(
+  input: { target: ChromeAttachTarget; cwd?: string },
+  deps: CloseManagedChromeDeps = defaultCloseDeps
+): Promise<void> {
+  if (!isSourceLoopManagedLaunchTarget(input.target)) {
+    return;
+  }
+
+  await closeManagedChrome(
+    {
+      targetId: input.target.id,
+      ...(input.cwd ? { cwd: input.cwd } : {})
+    },
+    deps
+  );
 }
 
 function isSourceLoopManagedLaunchTarget(target: ChromeAttachTarget): target is ChromeProfileAttachTarget {
@@ -191,6 +264,7 @@ function buildRegisterInput(input: {
   createdAt: string | undefined;
   notebooklmReadiness: ChromeNotebooklmReadiness | undefined;
   notebooklmValidatedAt: string | undefined;
+  currentProcessId: number | undefined;
   force: boolean;
 }) {
   return {
@@ -200,6 +274,7 @@ function buildRegisterInput(input: {
     ownership: "sourceloop_managed" as const,
     profileIsolation: "isolated" as const,
     chromeExecutablePath: input.executablePath,
+    ...(input.currentProcessId ? { currentProcessId: input.currentProcessId } : {}),
     remoteDebuggingPort: input.remoteDebuggingPort,
     ...(input.launchArgs ? { launchArgs: input.launchArgs } : {}),
     ...(input.description ? { description: input.description } : {}),
@@ -208,4 +283,79 @@ function buildRegisterInput(input: {
     ...(input.notebooklmValidatedAt ? { notebooklmValidatedAt: input.notebooklmValidatedAt } : {}),
     force: input.force
   };
+}
+
+function toChildProcessId(processId: number | undefined): number | undefined {
+  return typeof processId === "number" && Number.isInteger(processId) && processId > 0 ? processId : undefined;
+}
+
+function stripCurrentProcessId(target: ChromeProfileAttachTarget): ChromeProfileAttachTarget {
+  const { currentProcessId: _currentProcessId, ...rest } = target;
+  return rest;
+}
+
+async function findManagedChromeProcessId(target: ChromeProfileAttachTarget): Promise<number | undefined> {
+  if (process.platform === "win32") {
+    return target.currentProcessId;
+  }
+
+  const { stdout } = await execFileAsync("ps", ["-axo", "pid=,command="], {
+    encoding: "utf8",
+    maxBuffer: 1024 * 1024
+  });
+  const processArg = `--user-data-dir=${target.profileDirPath}`;
+
+  for (const line of stdout.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed || !trimmed.includes(processArg)) {
+      continue;
+    }
+    const match = trimmed.match(/^(\d+)\s+/);
+    if (!match) {
+      continue;
+    }
+    return Number(match[1]);
+  }
+
+  return undefined;
+}
+
+async function terminateManagedChromeProcess(processId: number): Promise<boolean> {
+  if (!isProcessRunning(processId)) {
+    return false;
+  }
+
+  process.kill(processId, "SIGTERM");
+  if (await waitForProcessExit(processId, 5_000)) {
+    return true;
+  }
+
+  if (!isProcessRunning(processId)) {
+    return true;
+  }
+
+  process.kill(processId, "SIGKILL");
+  return waitForProcessExit(processId, 2_000);
+}
+
+function isProcessRunning(processId: number): boolean {
+  try {
+    process.kill(processId, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function waitForProcessExit(processId: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    if (!isProcessRunning(processId)) {
+      return true;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+
+  return !isProcessRunning(processId);
 }

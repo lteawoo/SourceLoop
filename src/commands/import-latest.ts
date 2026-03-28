@@ -1,5 +1,6 @@
 import { Command } from "commander";
 import { loadChromeAttachTarget } from "../core/attach/manage-targets.js";
+import { closeManagedChromeIfOwnedTarget } from "../core/attach/launch-managed-chrome.js";
 import { loadNotebookBinding, loadQuestionBatch } from "../core/runs/load-artifacts.js";
 import { defaultNotebookBrowserSessionFactory } from "../core/notebooklm/browser-agent.js";
 import { importLatestAnswerIntoRun } from "../core/runs/run-qa.js";
@@ -53,6 +54,10 @@ export const importLatestCommand = new Command("import-latest")
         );
       } finally {
         await session.close();
+        await closeManagedChromeIfOwnedTarget({
+          target,
+          cwd: process.cwd()
+        }).catch(() => undefined);
       }
     }
   );

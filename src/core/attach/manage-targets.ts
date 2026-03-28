@@ -25,6 +25,7 @@ type RegisterChromeProfileTargetInput = {
   notebooklmReadiness?: ChromeNotebooklmReadiness;
   notebooklmValidatedAt?: string;
   chromeExecutablePath?: string;
+  currentProcessId?: number;
   remoteDebuggingPort?: number;
   launchArgs?: string[];
   description?: string;
@@ -67,6 +68,7 @@ export async function registerChromeProfileTarget(
       targetType: "profile",
       profileDirPath: path.resolve(input.profileDirPath),
       chromeExecutablePath: input.chromeExecutablePath ? path.resolve(input.chromeExecutablePath) : undefined,
+      currentProcessId: input.currentProcessId,
       remoteDebuggingPort: input.remoteDebuggingPort,
       launchArgs: input.launchArgs ?? [],
       createdAt: input.createdAt ?? new Date().toISOString()
@@ -237,6 +239,9 @@ function appendProfileBody(lines: string[], target: ChromeProfileAttachTarget): 
   lines.push(`- Profile Directory: ${target.profileDirPath}`);
   if (target.chromeExecutablePath) {
     lines.push(`- Chrome Executable: ${target.chromeExecutablePath}`);
+  }
+  if (target.currentProcessId) {
+    lines.push(`- Current Process Id: ${target.currentProcessId}`);
   }
   if (target.remoteDebuggingPort) {
     lines.push(`- Preferred Remote Debugging Port: ${target.remoteDebuggingPort}`);
