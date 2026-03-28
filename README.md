@@ -61,14 +61,17 @@ sourceloop notebook-create \
   --topic-id topic-ai-agents-market \
   --attach-target attach-work-chrome
 
+# managed notebook binding ids now derive from the remote NotebookLM notebook id
+# so read the returned JSON or status output for the exact binding id before importing
+# the first managed import works even when the notebook is still empty
 sourceloop ingest ./research-notes.md --topic topic-ai-agents-market
 
 sourceloop notebook-import \
-  --notebook notebook-ai-agents \
+  --notebook <managed-notebook-binding-id> \
   --source-id <source-id>
 
 sourceloop notebook-import \
-  --notebook notebook-ai-agents \
+  --notebook <managed-notebook-binding-id> \
   --url "https://youtube.com/watch?v=..."
 
 sourceloop plan topic-ai-agents-market --max-questions 5 --families core,execution
@@ -108,12 +111,14 @@ sourceloop doctor --json
 sourceloop topic create --name "AI agents market" --json
 sourceloop chrome launch --name work-chrome
 sourceloop notebook-create --name "AI Agents" --topic-id topic-ai-agents-market --attach-target attach-work-chrome --json
-sourceloop notebook-import --notebook notebook-ai-agents --url "https://youtube.com/watch?v=..." --json
+# works for the first source on an empty managed notebook and for later add-source imports
+sourceloop notebook-import --notebook <managed-notebook-binding-id> --url "https://youtube.com/watch?v=..." --json
 sourceloop plan topic-ai-agents-market --max-questions 3 --json
 sourceloop run <run-id> --limit 1 --json
 ```
 
 SourceLoop recommends `sourceloop chrome launch` as the preferred NotebookLM browser setup. Shared or unknown browser profiles still work in this phase, but `doctor` and `status` will warn so operators do not treat them as the preferred setup.
+For SourceLoop-managed notebooks, NotebookLM titles are treated as best-effort labels. The durable local binding id comes from the remote NotebookLM notebook id, so operators should use the returned JSON or `status --json` output rather than guessing a slug from the requested title.
 
 ## Vault Structure
 

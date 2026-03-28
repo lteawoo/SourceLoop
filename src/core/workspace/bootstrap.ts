@@ -119,8 +119,9 @@ Use this skill when the current project is a SourceLoop workspace.
 - Topic only and no notebook yet: \`sourceloop notebook-create ...\` then ask for source inputs
 - Topic plus sources and no notebook yet: \`sourceloop notebook-create ...\`
 - Existing NotebookLM URL: \`sourceloop notebook-bind ...\` then \`sourceloop notebook-source declare ...\`
-- Local source files: \`sourceloop ingest ...\` then \`sourceloop notebook-import --source-id ...\`
-- Remote URLs: \`sourceloop notebook-import --url ...\`
+- Local source files: \`sourceloop ingest ...\` then \`sourceloop notebook-import --source-id ...\` (also for the first source on an empty managed notebook)
+- Remote URLs: \`sourceloop notebook-import --url ...\` (also for the first source on an empty managed notebook)
+- For SourceLoop-managed notebooks, treat the requested notebook title as a label only and read the returned binding id from JSON or \`status --json\`
 - Ready topic with no run: \`sourceloop plan ... --max-questions 3 --families core,execution --json\`
 - Planned or incomplete run: \`sourceloop run ... --limit 1 --json\`
 - Existing latest answer only: \`sourceloop import-latest ...\`

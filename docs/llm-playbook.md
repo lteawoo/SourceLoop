@@ -82,6 +82,7 @@ sourceloop notebook-create \
 
 - stop before planning
 - ask the user which sources should be imported
+- use `notebook-import` for the first source even if the managed notebook is still empty
 - continue only after usable evidence exists
 
 ## Scenario 1: Existing NotebookLM Notebook
@@ -147,15 +148,18 @@ sourceloop notebook-create \
   --attach-target attach-work-chrome \
   --json
 
+# first source import can target the newly created empty notebook directly
+# managed notebook binding ids derive from the remote NotebookLM notebook id,
+# so read the `notebook-create --json` output before using notebook-import
 sourceloop ingest ./research-notes.md --topic topic-ai-agents-market
 
 sourceloop notebook-import \
-  --notebook notebook-ai-agents \
+  --notebook <managed-notebook-binding-id> \
   --source-id <source-id> \
   --json
 
 sourceloop notebook-import \
-  --notebook notebook-ai-agents \
+  --notebook <managed-notebook-binding-id> \
   --url "https://youtube.com/watch?v=<real-video-id>" \
   --json
 
@@ -168,6 +172,7 @@ sourceloop run <run-id> --limit 2 --show-browser --json
 
 - the user gives local notes, URLs, or YouTube links
 - the notebook should be created by SourceLoop
+- the requested notebook title is only a display label; the durable binding id comes from the remote notebook resource id
 
 ## Scenario 3: Controlled Research Passes
 

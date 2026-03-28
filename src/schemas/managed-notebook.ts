@@ -5,6 +5,8 @@ export const managedNotebookSetupSchema = z.object({
   type: z.literal("managed_notebook_setup"),
   topicId: z.string().min(1),
   notebookBindingId: z.string().min(1),
+  remoteNotebookId: z.string().min(1).optional(),
+  name: z.string().min(1).optional(),
   attachTargetId: z.string().min(1),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime()

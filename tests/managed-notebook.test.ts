@@ -7,8 +7,10 @@ import {
   createManagedNotebook,
   importIntoManagedNotebook,
   loadManagedNotebookImport,
-  loadManagedNotebookSetup
+  loadManagedNotebookSetup,
+  loadManagedNotebookSetupByBindingId
 } from "../src/core/notebooks/manage-managed-notebooks.js";
+import { bindNotebook } from "../src/core/notebooks/bind-notebook.js";
 import type { ManagedNotebookBrowserImportInput, NotebookBrowserSession, NotebookBrowserSessionFactory } from "../src/core/notebooklm/browser-agent.js";
 import { createQuestionPlan } from "../src/core/runs/question-planner.js";
 import { createTopic, loadTopic } from "../src/core/topics/manage-topics.js";
@@ -36,20 +38,93 @@ describe("managed notebook ingestion", () => {
       name: "Managed Setup Notebook",
       attachTargetId: attachTarget.target.id,
       sessionFactory: createManagedSessionFactory({
-        createdNotebookUrl: "https://notebooklm.google.com/notebook/managed-setup"
+        createdNotebookUrl: "https://notebooklm.google.com/notebook/managed-setup?addSource=true"
       })
     });
 
     const setupRecord = await loadManagedNotebookSetup(result.setup.id, workspaceRoot);
     const setupMarkdown = await fsPromises.readFile(result.setupMarkdownPath, "utf8");
 
+    expect(result.binding.id).toBe("notebook-managed-setup");
     expect(result.binding.topicId).toBe(topic.topic.id);
     expect(result.binding.attachTargetId).toBe(attachTarget.target.id);
+    expect(result.binding.notebookUrl).toBe("https://notebooklm.google.com/notebook/managed-setup");
+    expect(result.binding.remoteNotebookId).toBe("managed-setup");
+    expect(result.setup.id).toBe("managed-notebook-setup-managed-setup");
+    expect(result.setup.remoteNotebookId).toBe("managed-setup");
+    expect(result.setup.name).toBe("Managed Setup Notebook");
     expect(setupRecord.setup.notebookBindingId).toBe(result.binding.id);
     expect(setupMarkdown).toContain("type: managed-notebook-setup");
     expect(setupMarkdown).toContain("[[topics/");
     expect(setupMarkdown).toContain("[[notebooks/");
     expect(setupMarkdown).toContain("[[chrome-targets/");
+  });
+
+  it("keeps legacy name-based managed setups recoverable through remote notebook id matching", async () => {
+    const workspaceRoot = await fsPromises.mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
+    await initializeWorkspace({ directory: workspaceRoot, force: false });
+
+    const topic = await createTopic({
+      cwd: workspaceRoot,
+      name: "Legacy managed setup topic"
+    });
+    const attachTarget = await registerChromeEndpointTarget({
+      cwd: workspaceRoot,
+      name: "Legacy managed Chrome",
+      endpoint: "http://127.0.0.1:9222"
+    });
+
+    const legacyBinding = await bindNotebook({
+      cwd: workspaceRoot,
+      name: "Legacy Managed Notebook",
+      topic: topic.topic.name,
+      topicId: topic.topic.id,
+      notebookUrl: "https://notebooklm.google.com/notebook/legacy-remote-id",
+      accessMode: "owner"
+    });
+
+    await fsPromises.writeFile(
+      path.join(workspaceRoot, "vault", "notebook-setups", "managed-notebook-setup-topic-legacy-managed-setup-topic-legacy-managed-notebook.json"),
+      JSON.stringify(
+        {
+          id: "managed-notebook-setup-topic-legacy-managed-setup-topic-legacy-managed-notebook",
+          type: "managed_notebook_setup",
+          topicId: topic.topic.id,
+          notebookBindingId: legacyBinding.binding.id,
+          attachTargetId: attachTarget.target.id,
+          createdAt: "2026-03-28T00:00:00.000Z",
+          updatedAt: "2026-03-28T00:00:00.000Z"
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
+
+    const repairedBinding = await bindNotebook({
+      cwd: workspaceRoot,
+      id: "notebook-legacy-remote-id",
+      name: "Renamed Managed Notebook",
+      topic: topic.topic.name,
+      topicId: topic.topic.id,
+      notebookUrl: "https://notebooklm.google.com/notebook/legacy-remote-id",
+      accessMode: "owner",
+      force: true
+    });
+
+    const recovered = await loadManagedNotebookSetupByBindingId(repairedBinding.binding.id, workspaceRoot);
+
+    expect(recovered.setup.id).toBe("managed-notebook-setup-topic-legacy-managed-setup-topic-legacy-managed-notebook");
+    expect(recovered.setup.notebookBindingId).toBe(repairedBinding.binding.id);
+    expect(recovered.setup.remoteNotebookId).toBe("legacy-remote-id");
+    expect(recovered.setup.name).toBe("Renamed Managed Notebook");
+
+    await fsPromises.rm(path.join(workspaceRoot, "vault", "notebooks", `${legacyBinding.binding.id}.json`), { force: true });
+    await fsPromises.rm(legacyBinding.markdownPath, { force: true });
+
+    const recoveredAfterLegacyRemoval = await loadManagedNotebookSetupByBindingId(repairedBinding.binding.id, workspaceRoot);
+    expect(recoveredAfterLegacyRemoval.setup.notebookBindingId).toBe(repairedBinding.binding.id);
+    expect(recoveredAfterLegacyRemoval.setup.remoteNotebookId).toBe("legacy-remote-id");
   });
 
   it("counts imported managed notebook evidence for readiness and planning, but rejects queued imports", async () => {
@@ -167,6 +242,53 @@ describe("managed notebook ingestion", () => {
     expect(markdown).toContain("[[sources/");
   });
 
+  it("passes the canonical notebook URL into the first managed import and derives a usable YouTube title", async () => {
+    const workspaceRoot = await fsPromises.mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
+    await initializeWorkspace({ directory: workspaceRoot, force: false });
+
+    const topic = await createTopic({
+      cwd: workspaceRoot,
+      name: "Managed first import topic"
+    });
+    const attachTarget = await registerChromeEndpointTarget({
+      cwd: workspaceRoot,
+      name: "Managed First Import Chrome",
+      endpoint: "http://127.0.0.1:9222"
+    });
+
+    let observedImportInput: ManagedNotebookBrowserImportInput | undefined;
+    const managedNotebook = await createManagedNotebook({
+      cwd: workspaceRoot,
+      topicId: topic.topic.id,
+      name: "Managed First Import Notebook",
+      attachTargetId: attachTarget.target.id,
+      sessionFactory: createManagedSessionFactory({
+        createdNotebookUrl: "https://notebooklm.google.com/notebook/managed-first-import?addSource=true"
+      })
+    });
+
+    const result = await importIntoManagedNotebook({
+      cwd: workspaceRoot,
+      notebookBindingId: managedNotebook.binding.id,
+      url: "https://www.youtube.com/watch?v=eMlx5fFNoYc",
+      sessionFactory: createManagedSessionFactory({
+        importResults: [{ status: "imported" }],
+        onImport(input) {
+          observedImportInput = input;
+        }
+      })
+    });
+
+    expect(managedNotebook.binding.notebookUrl).toBe("https://notebooklm.google.com/notebook/managed-first-import");
+    expect(observedImportInput).toMatchObject({
+      notebookUrl: "https://notebooklm.google.com/notebook/managed-first-import",
+      importKind: "youtube_url",
+      title: "eMlx5fFNoYc",
+      url: "https://www.youtube.com/watch?v=eMlx5fFNoYc"
+    });
+    expect(result.managedImport.title).toBe("eMlx5fFNoYc");
+  });
+
   it("rolls back the created binding if managed setup persistence fails", async () => {
     const workspaceRoot = await fsPromises.mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
     await initializeWorkspace({ directory: workspaceRoot, force: false });
@@ -205,6 +327,7 @@ describe("managed notebook ingestion", () => {
 function createManagedSessionFactory(options: {
   createdNotebookUrl?: string;
   importResults?: ManagedImportResult[];
+  onImport?: (input: ManagedNotebookBrowserImportInput) => void;
 }): NotebookBrowserSessionFactory {
   let importIndex = 0;
 
@@ -223,7 +346,8 @@ function createManagedSessionFactory(options: {
             notebookUrl: options.createdNotebookUrl ?? "https://notebooklm.google.com/notebook/managed-default"
           };
         },
-        async importSource(_input: ManagedNotebookBrowserImportInput) {
+        async importSource(input: ManagedNotebookBrowserImportInput) {
+          options.onImport?.(input);
           const result = options.importResults?.[importIndex] ?? { status: "imported" as const };
           importIndex += 1;
           return result;

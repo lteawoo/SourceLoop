@@ -81,27 +81,31 @@ export const NOTEBOOKLM_NOTEBOOK_TITLE_INPUT_SELECTORS = [
 ] as const;
 
 export const NOTEBOOKLM_ADD_SOURCE_SELECTORS = [
+  'button.add-source-button',
+  'button[aria-label*="출처 추가"]',
   'button[aria-label*="Add source" i]',
-  'button[aria-label*="Add" i]',
+  'button[mattooltip*="출처 추가"]',
   'button:has-text("Add source")',
-  'button:has-text("Add")',
   'button:has-text("소스 추가")',
-  'button:has-text("추가")'
+  '[data-testid*="add-source" i]'
 ] as const;
 
 export const NOTEBOOKLM_IMPORT_URL_OPTION_SELECTORS = [
+  'button[aria-label*="웹사이트"]',
+  'button[aria-label*="Website" i]',
   'button:has-text("Website")',
   'button:has-text("웹사이트")',
-  'button:has-text("YouTube")',
-  'button:has-text("Link")',
-  'button:has-text("URL")'
+  'button:has-text("웹사이트 및 YouTube URL")'
 ] as const;
 
 export const NOTEBOOKLM_IMPORT_URL_INPUT_SELECTORS = [
   'input[type="url"]',
   'input[placeholder*="https"]',
   'input[placeholder*="youtube" i]',
-  'textarea[placeholder*="https"]'
+  'textarea[placeholder*="https"]',
+  'textarea[aria-label*="URL" i]',
+  'textarea[placeholder*="링크를 붙여넣으세요"]',
+  'textarea[formcontrolname="urls"]'
 ] as const;
 
 export const NOTEBOOKLM_IMPORT_FILE_OPTION_SELECTORS = [
@@ -115,16 +119,25 @@ export const NOTEBOOKLM_IMPORT_FILE_INPUT_SELECTORS = [
   'input[type="file"]'
 ] as const;
 
+export const NOTEBOOKLM_INITIAL_SOURCE_INTAKE_SELECTORS = [
+  ...NOTEBOOKLM_IMPORT_URL_OPTION_SELECTORS,
+  ...NOTEBOOKLM_IMPORT_URL_INPUT_SELECTORS,
+  ...NOTEBOOKLM_IMPORT_FILE_OPTION_SELECTORS,
+  ...NOTEBOOKLM_IMPORT_FILE_INPUT_SELECTORS
+] as const;
+
 export const NOTEBOOKLM_IMPORT_SUBMIT_SELECTORS = [
+  'button[aria-label*="삽입"]',
   'button[aria-label*="Insert" i]',
+  'button:has-text("삽입")',
   'button[aria-label*="Import" i]',
   'button[aria-label*="Add" i]',
-  'button[type="submit"]',
   'button:has-text("Insert")',
   'button:has-text("Import")',
   'button:has-text("Add")',
   'button:has-text("추가")',
-  'button:has-text("가져오기")'
+  'button:has-text("가져오기")',
+  'button[type="submit"]'
 ] as const;
 
 export const NOTEBOOKLM_IMPORT_ERROR_SELECTORS = [
@@ -138,7 +151,6 @@ export const NOTEBOOKLM_IMPORT_SUCCESS_CANDIDATE_SELECTORS = [
   '[data-test-id*="source" i]',
   '[aria-label*="source" i]',
   '[aria-label*="출처"]',
-  '[role="listitem"]',
   'mat-expansion-panel',
   'mat-list-item',
   '.source-item',

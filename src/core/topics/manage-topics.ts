@@ -17,7 +17,7 @@ import { sourceDocumentSchema } from "../../schemas/source.js";
 import { notebookBindingSchema } from "../../schemas/notebook.js";
 import { notebookSourceManifestSchema } from "../../schemas/notebook-source.js";
 import { runIndexSchema } from "../../schemas/run.js";
-import { managedNotebookImportSchema } from "../../schemas/managed-notebook.js";
+import { managedNotebookImportSchema, managedNotebookSetupSchema } from "../../schemas/managed-notebook.js";
 import { makeAliases, makeTags, normalizeObsidianText } from "../../lib/obsidian.js";
 import { getNotebookSourceManifestNote } from "../vault/notes.js";
 import { getManagedNotebookImportNote } from "../vault/notes.js";
@@ -116,10 +116,11 @@ export async function refreshTopicArtifacts(topicId: string, cwd?: string): Prom
   const vault = getVaultPaths(workspace);
   const topicPaths = getTopicPaths(workspace, topicId);
   const current = await loadTopic(topicId, cwd);
-  const [sources, notebookBindings, notebookSources, managedNotebookImports, runs] = await Promise.all([
+  const [sources, notebookBindings, notebookSources, managedNotebookSetups, managedNotebookImports, runs] = await Promise.all([
     loadSourceArtifacts(vault.sourcesDir),
     loadNotebookBindings(vault.notebooksDir),
     loadNotebookSourceManifests(vault.notebookSourcesDir),
+    loadManagedNotebookSetups(vault.notebookSetupsDir),
     loadManagedNotebookImports(vault.notebookImportsDir),
     loadRunIndexes(vault.runsDir)
   ]);
@@ -137,7 +138,9 @@ export async function refreshTopicArtifacts(topicId: string, cwd?: string): Prom
       (managedImport) =>
         managedImport.topicId === topicId &&
         managedImport.status === "imported" &&
-        notebookBindingIds.includes(managedImport.notebookBindingId)
+        notebookBindings.some((binding) =>
+          isManagedNotebookImportCompatibleWithBinding(managedImport, binding, managedNotebookSetups)
+        )
     )
     .map((managedImport) => managedImport.id)
     .sort();
@@ -350,6 +353,11 @@ async function loadManagedNotebookImports(notebookImportsDir: string) {
   return files.map((raw) => managedNotebookImportSchema.parse(JSON.parse(raw)));
 }
 
+async function loadManagedNotebookSetups(notebookSetupsDir: string) {
+  const files = await readJsonFiles(notebookSetupsDir);
+  return files.map((raw) => managedNotebookSetupSchema.parse(JSON.parse(raw)));
+}
+
 async function loadRunIndexes(runsDir: string) {
   try {
     const entries = await readdir(runsDir, { withFileTypes: true });
@@ -378,6 +386,23 @@ async function readJsonFiles(directory: string): Promise<string[]> {
     }
     throw error;
   }
+}
+
+function isManagedNotebookImportCompatibleWithBinding(
+  managedImport: ReturnType<typeof managedNotebookImportSchema.parse>,
+  binding: ReturnType<typeof notebookBindingSchema.parse>,
+  setups: ReturnType<typeof managedNotebookSetupSchema.parse>[]
+): boolean {
+  if (managedImport.notebookBindingId === binding.id) {
+    return true;
+  }
+
+  if (!binding.remoteNotebookId) {
+    return false;
+  }
+
+  const setup = setups.find((candidate) => candidate.id === managedImport.managedNotebookSetupId);
+  return Boolean(setup?.remoteNotebookId && setup.remoteNotebookId === binding.remoteNotebookId);
 }
 
 async function fileExists(filePath: string): Promise<boolean> {

@@ -1,14 +1,45 @@
 import { describe, expect, it } from "vitest";
 import {
+  canonicalizeNotebookUrl,
+  didImportIncreaseVisibleSourceCount,
+  ensureNotebookTargetMatch,
   didImportProduceNewMatchingCandidate,
   getManagedImportSuccessNeedles,
+  isNotebookPageMatch,
   isLikelyCitationOverflowControl,
+  parseNotebookSourceCount,
   shouldExpandCitationOverflowControl,
   type ManagedNotebookBrowserImportInput,
   type NotebookLMCitationOverflowCandidate
 } from "../src/core/notebooklm/browser-agent.js";
 
 describe("NotebookLM browser agent overflow controls", () => {
+  it("canonicalizes transient managed notebook URLs", () => {
+    expect(canonicalizeNotebookUrl("https://notebooklm.google.com/notebook/abc?addSource=true")).toBe(
+      "https://notebooklm.google.com/notebook/abc"
+    );
+    expect(canonicalizeNotebookUrl("https://notebooklm.google.com/notebook/abc?addSource=true&foo=bar#hash")).toBe(
+      "https://notebooklm.google.com/notebook/abc?foo=bar"
+    );
+  });
+
+  it("distinguishes target notebook pages from NotebookLM home redirects", () => {
+    expect(isNotebookPageMatch(
+      "https://notebooklm.google.com/notebook/abc?addSource=true",
+      "https://notebooklm.google.com/notebook/abc"
+    )).toBe(true);
+    expect(isNotebookPageMatch(
+      "https://notebooklm.google.com/",
+      "https://notebooklm.google.com/notebook/abc"
+    )).toBe(false);
+    expect(() =>
+      ensureNotebookTargetMatch(
+        "https://notebooklm.google.com/",
+        "https://notebooklm.google.com/notebook/abc"
+      )
+    ).toThrow(/did not open the requested notebook/i);
+  });
+
   it("identifies likely citation overflow controls", () => {
     const candidates: NotebookLMCitationOverflowCandidate[] = [
       {
@@ -92,5 +123,19 @@ describe("NotebookLM browser agent overflow controls", () => {
     expect(getManagedImportSuccessNeedles(input)).toContain("managed import title");
     expect(didImportProduceNewMatchingCandidate(baseline, unchanged, input)).toBe(false);
     expect(didImportProduceNewMatchingCandidate(baseline, imported, input)).toBe(true);
+  });
+
+  it("parses visible source counts from NotebookLM UI text", () => {
+    expect(parseNotebookSourceCount("소스 1개")).toBe(1);
+    expect(parseNotebookSourceCount("2 sources")).toBe(2);
+    expect(parseNotebookSourceCount("Sources 12")).toBe(12);
+    expect(parseNotebookSourceCount("no source count here")).toBeUndefined();
+  });
+
+  it("treats source count growth as import success even when row signatures are unchanged", () => {
+    expect(didImportIncreaseVisibleSourceCount(1, 2)).toBe(true);
+    expect(didImportIncreaseVisibleSourceCount(1, 1)).toBe(false);
+    expect(didImportIncreaseVisibleSourceCount(undefined, 2)).toBe(false);
+    expect(didImportIncreaseVisibleSourceCount(1, undefined)).toBe(false);
   });
 });

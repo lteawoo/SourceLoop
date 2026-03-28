@@ -229,13 +229,16 @@ export async function buildDoctorReport(cwd?: string): Promise<DoctorReport> {
 
     for (const binding of bindingsMissingEvidence) {
       const summary = bindingEvidence.get(binding.id);
+      const needsFirstSource = summary ? needsFirstManagedSourceImport(summary) : false;
       findings.push({
         severity: summary?.hasManagedNotebook ? "warning" : "error",
         category: "evidence",
         topicId: topic.id,
         notebookBindingId: binding.id,
         message: summary?.hasManagedNotebook
-          ? `Managed notebook binding ${binding.id} for topic ${topic.id} has no imported evidence yet.`
+          ? needsFirstSource
+            ? `Managed notebook binding ${binding.id} for topic ${topic.id} still needs its first imported source.`
+            : `Managed notebook binding ${binding.id} for topic ${topic.id} has no imported evidence yet.`
           : `Notebook binding ${binding.id} for topic ${topic.id} has no aligned local or notebook-backed evidence.`,
         suggestedCommand: summary?.hasManagedNotebook
           ? `sourceloop notebook-import --notebook ${binding.id} --url "https://..."`
@@ -500,7 +503,7 @@ function buildTopicSummaries(artifacts: WorkspaceArtifacts): TopicStatusSummary[
         (managedImport) =>
           managedImport.topicId === topic.id &&
           managedImport.status === "imported" &&
-          bindingIds.has(managedImport.notebookBindingId)
+          topicBindings.some((binding) => isManagedNotebookImportCompatibleWithBinding(managedImport, binding, artifacts.managedNotebookSetups))
       ).length;
       const runs = artifacts.runs.filter((run) => run.topicId === topic.id);
 
@@ -535,12 +538,14 @@ function buildBindingEvidenceSummaries(artifacts: WorkspaceArtifacts): Map<strin
         (manifest) => manifest.topicId === binding.topicId && manifest.notebookBindingId === binding.id
       ).length;
       const managedImports = artifacts.managedNotebookImports.filter(
-        (managedImport) => managedImport.topicId === binding.topicId && managedImport.notebookBindingId === binding.id
+        (managedImport) =>
+          managedImport.topicId === binding.topicId &&
+          isManagedNotebookImportCompatibleWithBinding(managedImport, binding, artifacts.managedNotebookSetups)
       );
       const importedManagedEvidenceCount = managedImports.filter((managedImport) => managedImport.status === "imported").length;
       const queuedManagedImportCount = managedImports.filter((managedImport) => managedImport.status === "queued").length;
       const failedManagedImportCount = managedImports.filter((managedImport) => managedImport.status === "failed").length;
-      const hasManagedNotebook = artifacts.managedNotebookSetups.some((setup) => setup.notebookBindingId === binding.id);
+      const hasManagedNotebook = artifacts.managedNotebookSetups.some((setup) => isManagedNotebookSetupCompatibleWithBinding(setup, binding));
 
       return [
         binding.id,
@@ -558,6 +563,31 @@ function buildBindingEvidenceSummaries(artifacts: WorkspaceArtifacts): Map<strin
       ] satisfies [string, BindingEvidenceSummary];
     })
   );
+}
+
+function isManagedNotebookSetupCompatibleWithBinding(setup: ManagedNotebookSetup, binding: NotebookBinding): boolean {
+  if (setup.notebookBindingId === binding.id) {
+    return true;
+  }
+
+  return Boolean(setup.remoteNotebookId && binding.remoteNotebookId && setup.remoteNotebookId === binding.remoteNotebookId);
+}
+
+function isManagedNotebookImportCompatibleWithBinding(
+  managedImport: ManagedNotebookImport,
+  binding: NotebookBinding,
+  setups: ManagedNotebookSetup[]
+): boolean {
+  if (managedImport.notebookBindingId === binding.id) {
+    return true;
+  }
+
+  if (!binding.remoteNotebookId) {
+    return false;
+  }
+
+  const setup = setups.find((candidate) => candidate.id === managedImport.managedNotebookSetupId);
+  return Boolean(setup?.remoteNotebookId && setup.remoteNotebookId === binding.remoteNotebookId);
 }
 
 function buildRunSummaries(artifacts: WorkspaceArtifacts): RunStatusSummary[] {
@@ -675,12 +705,15 @@ function recommendNextActions(
 
     if (missingEvidenceBinding) {
       const summary = bindingEvidence.get(missingEvidenceBinding.id);
+      const needsFirstSource = summary ? needsFirstManagedSourceImport(summary) : false;
       actions.push({
         kind: summary?.hasManagedNotebook ? "import_managed_source" : "declare_evidence",
         topicId: topic.id,
         notebookBindingId: missingEvidenceBinding.id,
         message: summary?.hasManagedNotebook
-          ? `Import sources into managed notebook ${missingEvidenceBinding.id}.`
+          ? needsFirstSource
+            ? `Import the first source into managed notebook ${missingEvidenceBinding.id}.`
+            : `Import sources into managed notebook ${missingEvidenceBinding.id}.`
           : `Declare evidence for topic ${topic.id}.`,
         command: summary?.hasManagedNotebook
           ? `sourceloop notebook-import --notebook ${missingEvidenceBinding.id} --url "https://..."`
@@ -731,6 +764,16 @@ function dedupeActions(actions: OperatorNextAction[]): OperatorNextAction[] {
     seen.add(key);
     return true;
   });
+}
+
+function needsFirstManagedSourceImport(summary: BindingEvidenceSummary): boolean {
+  return (
+    summary.hasManagedNotebook &&
+    summary.importedManagedEvidenceCount === 0 &&
+    summary.queuedManagedImportCount === 0 &&
+    summary.failedManagedImportCount === 0 &&
+    summary.alignedNotebookEvidenceCount === 0
+  );
 }
 
 function countAttachTargetsByIsolation(
