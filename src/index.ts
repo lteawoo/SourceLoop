@@ -5,6 +5,7 @@ import { attachCommand } from "./commands/attach.js";
 import { authCommand } from "./commands/auth.js";
 import { composeCommand } from "./commands/compose.js";
 import { ingestCommand } from "./commands/ingest.js";
+import { importLatestCommand } from "./commands/import-latest.js";
 import { initCommand } from "./commands/init.js";
 import { notebookBindCommand } from "./commands/notebook-bind.js";
 import { planCommand } from "./commands/plan.js";
@@ -20,6 +21,7 @@ program
 
 program.addCommand(initCommand);
 program.addCommand(ingestCommand);
+program.addCommand(importLatestCommand);
 program.addCommand(topicCommand);
 program.addCommand(attachCommand);
 program.addCommand(authCommand);

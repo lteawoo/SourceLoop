@@ -24,6 +24,19 @@ export type ExecuteQARunResult = {
   completedExchanges: QAExchange[];
 };
 
+export type ImportLatestAnswerIntoRunInput = {
+  runId: string;
+  answer: NotebookRunnerAnswer;
+  questionId?: string;
+  cwd?: string;
+};
+
+export type ImportLatestAnswerIntoRunResult = {
+  run: QARunIndex;
+  exchange: QAExchange;
+  importedQuestionId: string;
+};
+
 export async function executeQARun(input: ExecuteQARunInput): Promise<ExecuteQARunResult> {
   const { workspace, batch, run } = await loadQuestionBatch(input.runId, input.cwd);
   const { binding } = await loadNotebookBinding(run.notebookBindingId, input.cwd);
@@ -150,6 +163,56 @@ export async function executeQARun(input: ExecuteQARunInput): Promise<ExecuteQAR
   }
 }
 
+export async function importLatestAnswerIntoRun(
+  input: ImportLatestAnswerIntoRunInput
+): Promise<ImportLatestAnswerIntoRunResult> {
+  const { workspace, batch, run } = await loadQuestionBatch(input.runId, input.cwd);
+  const { binding } = await loadNotebookBinding(run.notebookBindingId, input.cwd);
+  const runPaths = getRunPaths(workspace, run.id);
+  await mkdir(runPaths.exchangesDir, { recursive: true });
+  await mkdir(runPaths.outputsDir, { recursive: true });
+
+  const existingExchanges = await loadRunExchanges(run.id, input.cwd);
+  const completed = new Map(existingExchanges.map((exchange) => [exchange.questionId, exchange]));
+
+  const question = resolveImportQuestion(batch, completed, input.questionId);
+  const exchange = await writeExchangeArtifact({
+    workspace,
+    runId: run.id,
+    runPaths,
+    notebookBindingId: binding.id,
+    notebookName: binding.name,
+    questionId: question.id,
+    question: question.prompt,
+    topicName: run.topic,
+    batch,
+    answer: input.answer,
+    ...(run.topicId ? { topicId: run.topicId } : {})
+  });
+
+  completed.set(question.id, exchange);
+  const allQuestionsCompleted = batch.questions.every((plannedQuestion) => completed.has(plannedQuestion.id));
+  const updatedRun = runIndexSchema.parse({
+    ...run,
+    status: allQuestionsCompleted ? "completed" : "running",
+    updatedAt: new Date().toISOString(),
+    completedQuestionIds: [...completed.keys()],
+    failedQuestionId: undefined,
+    failureReason: undefined
+  });
+
+  await persistRunIndex(workspace, runPaths.indexJsonPath, updatedRun, batch, binding);
+  if (updatedRun.topicId) {
+    await refreshTopicArtifacts(updatedRun.topicId, input.cwd);
+  }
+
+  return {
+    run: updatedRun,
+    exchange,
+    importedQuestionId: question.id
+  };
+}
+
 async function preflightTopicContext(
   run: QARunIndex,
   binding: Awaited<ReturnType<typeof loadNotebookBinding>>["binding"],
@@ -182,6 +245,27 @@ function updateRunStatus(run: QARunIndex, status: QARunIndex["status"]): QARunIn
     status,
     updatedAt: new Date().toISOString()
   });
+}
+
+function resolveImportQuestion(
+  batch: QuestionBatch,
+  completed: Map<string, QAExchange>,
+  explicitQuestionId?: string
+) {
+  if (explicitQuestionId) {
+    const explicitQuestion = batch.questions.find((question) => question.id === explicitQuestionId);
+    if (!explicitQuestion) {
+      throw new Error(`Question ${explicitQuestionId} does not exist in run ${batch.id}.`);
+    }
+    return explicitQuestion;
+  }
+
+  const nextQuestion = batch.questions.find((question) => !completed.has(question.id));
+  if (!nextQuestion) {
+    throw new Error(`Run ${batch.id} already has archived answers for every planned question. Use --question-id to overwrite is not supported.`);
+  }
+
+  return nextQuestion;
 }
 
 async function persistRunIndex(
@@ -257,6 +341,7 @@ function buildExchangeMarkdown(
   batch: QuestionBatch,
   notebookName: string
 ): string {
+  const linkedAnswer = linkCitationAnchors(exchange.answer);
   const citationLines =
     exchange.citations.length === 0
       ? ["- No citations captured"]
@@ -270,7 +355,7 @@ function buildExchangeMarkdown(
           if (citation.note) {
             parts.push(`- ${citation.note}`);
           }
-          return `- ${parts.join(" ")}`;
+          return `- ${parts.join(" ")} ^citation-${citation.label}`;
         });
 
   const title = summarizeQuestionTitle(exchange.question, exchange.questionId);
@@ -292,7 +377,7 @@ function buildExchangeMarkdown(
 ${exchange.question}
 
 ## NotebookLM Answer
-${exchange.answer}
+${linkedAnswer}
 
 ## Citations
 ${citationLines.join("\n")}
@@ -361,4 +446,20 @@ ${citationLines.join("\n")}
       notebookName
     )}`
   );
+}
+
+function linkCitationAnchors(answer: string): string {
+  return answer.replace(/\[(\d+)\]/g, (match, label: string, offset: number, source: string) => {
+    const linked = `[[#^citation-${label}|[${label}]]]`;
+    if (offset === 0) {
+      return linked;
+    }
+
+    const previousChar = source[offset - 1] ?? "";
+    if (/\s/.test(previousChar)) {
+      return linked;
+    }
+
+    return ` ${linked}`;
+  });
 }

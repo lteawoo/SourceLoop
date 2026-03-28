@@ -7,7 +7,7 @@ import { bindNotebook } from "../src/core/notebooks/bind-notebook.js";
 import { composeRun } from "../src/core/outputs/compose-run.js";
 import { FixtureNotebookRunnerAdapter } from "../src/core/notebooklm/fixture-adapter.js";
 import { createQuestionPlan } from "../src/core/runs/question-planner.js";
-import { executeQARun } from "../src/core/runs/run-qa.js";
+import { executeQARun, importLatestAnswerIntoRun } from "../src/core/runs/run-qa.js";
 import { registerChromeEndpointTarget } from "../src/core/attach/manage-targets.js";
 import { createTopic, loadTopic } from "../src/core/topics/manage-topics.js";
 import { initializeWorkspace } from "../src/core/workspace/init-workspace.js";
@@ -42,10 +42,10 @@ describe("NotebookLM QA run archive", () => {
       plan.batch.questions.map((question, index) => [
         question.id,
         {
-          answer: `Answer ${index + 1} for ${question.prompt}`,
+          answer: `Answer ${index + 1} for ${question.prompt}[1]`,
           citations: [
             {
-              label: `source-${index + 1}`,
+              label: "1",
               sourcePath: `vault/sources/src_${index + 1}.md`
             }
           ]
@@ -94,6 +94,8 @@ describe("NotebookLM QA run archive", () => {
     expect(questionsMarkdown).toContain("[[runs/");
     expect(exchangeMarkdown).toContain("## NotebookLM Answer");
     expect(exchangeMarkdown).toContain("answer_source: notebooklm");
+    expect(exchangeMarkdown).toContain(`Answer 1 for ${plan.batch.questions[0]!.prompt} [[#^citation-1|[1]]]`);
+    expect(exchangeMarkdown).toContain("^citation-1");
     expect(outputMarkdown).toContain("## Traceability");
     expect(outputMarkdown).toContain("[[");
     expect(outputMarkdown).toContain("type: output");
@@ -479,5 +481,58 @@ describe("NotebookLM QA run archive", () => {
     expect(path.basename(binding.markdownPath)).toContain("웹디자인-노트북");
     expect(path.basename(plan.runMarkdownPath)).toContain("클로드-코드-웹디자인-run");
     expect(path.basename(plan.questionsMarkdownPath)).toContain("클로드-코드-웹디자인-questions");
+  });
+
+  it("imports the latest NotebookLM answer into the next unanswered planned question", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
+    await initializeWorkspace({ directory: workspaceRoot, force: false });
+
+    const binding = await bindNotebook({
+      cwd: workspaceRoot,
+      name: "Latest Import Notebook",
+      topic: "latest-import",
+      notebookUrl: "https://notebooklm.google.com/notebook/latest-import",
+      accessMode: "owner"
+    });
+
+    const plan = await createQuestionPlan({
+      cwd: workspaceRoot,
+      topic: "latest answer import",
+      notebookBindingId: binding.binding.id
+    });
+
+    const firstImport = await importLatestAnswerIntoRun({
+      cwd: workspaceRoot,
+      runId: plan.run.id,
+      answer: {
+        answer: "Imported answer one",
+        citations: [{ label: "1", note: "Imported source" }],
+        answerSource: "notebooklm"
+      }
+    });
+
+    expect(firstImport.importedQuestionId).toBe(plan.batch.questions[0]?.id);
+    expect(firstImport.run.status).toBe("running");
+
+    const secondImport = await importLatestAnswerIntoRun({
+      cwd: workspaceRoot,
+      runId: plan.run.id,
+      answer: {
+        answer: "Imported answer two",
+        citations: [{ label: "2", note: "Imported source two" }],
+        answerSource: "notebooklm"
+      },
+      questionId: plan.batch.questions[1]?.id
+    });
+
+    expect(secondImport.importedQuestionId).toBe(plan.batch.questions[1]?.id);
+
+    const workspace = await loadWorkspace(workspaceRoot);
+    const firstExchangeMarkdown = await readFile(
+      getExchangeNote(workspace, plan.run.id, plan.batch.questions[0]!).absolutePath,
+      "utf8"
+    );
+    expect(firstExchangeMarkdown).toContain("Imported answer one");
+    expect(firstExchangeMarkdown).toContain("Imported source");
   });
 });

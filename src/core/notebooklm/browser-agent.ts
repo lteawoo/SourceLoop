@@ -5,12 +5,90 @@ import { chromium, type Browser, type BrowserContext, type ElementHandle, type P
 import type { ChromeAttachTarget, ChromeProfileAttachTarget } from "../../schemas/attach.js";
 import type { CitationReference, PlannedQuestion } from "../../schemas/run.js";
 import {
+  NOTEBOOKLM_ANSWER_BODY_SELECTORS,
+  NOTEBOOKLM_CITATION_SELECTORS,
+  NOTEBOOKLM_CITATION_OVERFLOW_SELECTORS,
+  NOTEBOOKLM_CITATION_POPOVER_SELECTORS,
   NOTEBOOKLM_DEFAULT_URL,
   NOTEBOOKLM_QUERY_INPUT_SELECTORS,
   NOTEBOOKLM_RESPONSE_SELECTORS,
   NOTEBOOKLM_SUBMIT_SELECTORS,
   NOTEBOOKLM_THINKING_SELECTOR
 } from "./config.js";
+import {
+  extractCitationReferencesFromSnapshot,
+  extractNormalizedAnswerFromSnapshot,
+  type NotebookLMResponseSnapshot
+} from "./response-extraction.js";
+
+export type NotebookLMCitationOverflowCandidate = {
+  overflowId: string;
+  text?: string | null;
+  ariaLabel?: string | null;
+  title?: string | null;
+  className?: string | null;
+  dataTestId?: string | null;
+  selector?: string | null;
+  citationAdjacent?: boolean;
+};
+
+const NOTEBOOKLM_CITATION_OVERFLOW_PATTERNS = [
+  /^\.{3,}$/,
+  /^…$/,
+  /^more_horiz$/i,
+  /\bshow more\b/i,
+  /\bmore citations?\b/i,
+  /\bexpand\b/i,
+  /더보기/,
+  /펼치기/,
+  /추가/
+] as const;
+
+const NOTEBOOKLM_NON_OVERFLOW_CONTROL_PATTERNS = [
+  /\bcopy\b/i,
+  /\bshare\b/i,
+  /\bretry\b/i,
+  /\brefresh\b/i,
+  /\bthumb/i,
+  /좋아요/,
+  /싫어요/,
+  /복사/,
+  /공유/
+] as const;
+
+export function isLikelyCitationOverflowControl(candidate: {
+  text?: string | null;
+  ariaLabel?: string | null;
+  title?: string | null;
+  className?: string | null;
+  dataTestId?: string | null;
+  selector?: string | null;
+}): boolean {
+  const values = [
+    candidate.text,
+    candidate.ariaLabel,
+    candidate.title,
+    candidate.className,
+    candidate.dataTestId
+  ]
+    .map((value) => normalizeControlText(value))
+    .filter(Boolean);
+
+  if (values.length === 0) {
+    return false;
+  }
+
+  const combined = values.join(" | ");
+  if (NOTEBOOKLM_NON_OVERFLOW_CONTROL_PATTERNS.some((pattern) => pattern.test(combined))) {
+    return false;
+  }
+
+  return NOTEBOOKLM_CITATION_OVERFLOW_PATTERNS.some((pattern) => values.some((value) => pattern.test(value)));
+}
+
+export function shouldExpandCitationOverflowControl(candidate: NotebookLMCitationOverflowCandidate): boolean {
+  return Boolean(candidate.citationAdjacent) && isLikelyCitationOverflowControl(candidate);
+}
 
 export type ChromeAttachValidationCode =
   | "chrome_unreachable"
@@ -30,11 +108,16 @@ export class ChromeAttachValidationError extends Error {
 export interface NotebookBrowserSession {
   preflight(notebookUrl: string): Promise<void>;
   askQuestion(question: PlannedQuestion): Promise<{ answer: string; citations: CitationReference[] }>;
+  captureLatestAnswer(): Promise<{ answer: string; citations: CitationReference[] }>;
   close(): Promise<void>;
 }
 
 export interface NotebookBrowserSessionFactory {
-  createSession(input: { target: ChromeAttachTarget; showBrowser?: boolean }): Promise<NotebookBrowserSession>;
+  createSession(input: {
+    target: ChromeAttachTarget;
+    showBrowser?: boolean;
+    reuseExistingNotebookPage?: boolean;
+  }): Promise<NotebookBrowserSession>;
 }
 
 export async function disposeNotebookBrowserSessionResources(input: {
@@ -90,32 +173,81 @@ export const defaultNotebookBrowserSessionFactory: NotebookBrowserSessionFactory
 async function createPlaywrightNotebookBrowserSession(input: {
   target: ChromeAttachTarget;
   showBrowser?: boolean;
+  reuseExistingNotebookPage?: boolean;
 }): Promise<NotebookBrowserSession> {
   const state = await connectToAttachedChrome(input.target, input.showBrowser ?? false);
   const context = getDefaultContext(state.browser);
-  const page = await context.newPage();
+  let page: Page | undefined;
+  let ownsPage = false;
+
+  const ensurePage = async (notebookUrl?: string): Promise<Page> => {
+    if (page) {
+      return page;
+    }
+
+    if (input.reuseExistingNotebookPage && notebookUrl) {
+      const existingPage = await findReusableNotebookPage(context, notebookUrl);
+      if (existingPage) {
+        page = existingPage;
+        ownsPage = false;
+        return page;
+      }
+    }
+
+    page = await context.newPage();
+    ownsPage = true;
+    return page;
+  };
 
   return {
     async preflight(notebookUrl: string): Promise<void> {
-      await openNotebookPage(page, notebookUrl);
-      await ensureNotebookAccessible(page);
+      const activePage = await ensurePage(notebookUrl);
+      if (input.reuseExistingNotebookPage && isNotebookPageMatch(activePage.url(), notebookUrl)) {
+        await activePage.bringToFront().catch(() => undefined);
+      } else {
+        await openNotebookPage(activePage, notebookUrl);
+      }
+      await ensureNotebookAccessible(activePage);
+      await waitForNotebookSettled(activePage);
     },
     async askQuestion(question: PlannedQuestion): Promise<{ answer: string; citations: CitationReference[] }> {
-      const inputSelector = await waitForFirstVisibleSelector(page, NOTEBOOKLM_QUERY_INPUT_SELECTORS);
-      const previousAnswer = await snapshotLatestResponse(page);
-      await clearQueryInput(page, inputSelector);
-      await setQueryInputText(page, inputSelector, question.prompt);
-      await submitQuery(page, inputSelector);
+      const activePage = await ensurePage();
+      const inputSelector = await waitForFirstVisibleSelector(activePage, NOTEBOOKLM_QUERY_INPUT_SELECTORS);
+      await waitForNotebookSettled(activePage, inputSelector);
+      const previousAnswer = await snapshotLatestResponse(activePage);
+      await clearQueryInput(activePage, inputSelector);
+      await setQueryInputText(activePage, inputSelector, question.prompt);
+      await submitQuery(activePage, inputSelector);
 
-      const latestElement = await waitForStableLatestResponse(page, previousAnswer);
-      const answer = (await latestElement.innerText()).trim();
+      const latestElement = await waitForStableLatestResponse(activePage, previousAnswer);
+      const responseSnapshot = await collectResponseSnapshot(activePage, latestElement);
+      const answer = extractNormalizedAnswerFromSnapshot(responseSnapshot);
       if (!answer) {
         throw new Error(`NotebookLM returned an empty answer for question ${question.id}`);
       }
 
       return {
         answer,
-        citations: await extractCitationReferences(latestElement)
+        citations: extractCitationReferencesFromSnapshot(responseSnapshot.citationCandidates)
+      };
+    },
+    async captureLatestAnswer(): Promise<{ answer: string; citations: CitationReference[] }> {
+      const activePage = await ensurePage();
+      await waitForNotebookSettled(activePage);
+      const latestElement = await waitForLatestVisibleResponse(activePage, 30_000);
+      if (!latestElement) {
+        throw new Error("Could not find a latest NotebookLM response to import.");
+      }
+
+      const responseSnapshot = await collectResponseSnapshot(activePage, latestElement);
+      const answer = extractNormalizedAnswerFromSnapshot(responseSnapshot);
+      if (!answer) {
+        throw new Error("NotebookLM did not expose a readable latest answer.");
+      }
+
+      return {
+        answer,
+        citations: extractCitationReferencesFromSnapshot(responseSnapshot.citationCandidates)
       };
     },
     async close(): Promise<void> {
@@ -126,13 +258,35 @@ async function createPlaywrightNotebookBrowserSession(input: {
           }
         : undefined;
       await disposeNotebookBrowserSessionResources({
-        closePage: () => page.close(),
+        closePage: () => (page && ownsPage ? page.close() : Promise.resolve()),
         closeBrowserConnection: () => state.browser.close(),
         ownsBrowserProcess: state.ownsBrowser,
         ...(killSpawnedProcess ? { killSpawnedProcess } : {})
       });
     }
   };
+}
+
+async function findReusableNotebookPage(context: BrowserContext, notebookUrl: string): Promise<Page | undefined> {
+  const targetPath = normalizeNotebookPath(notebookUrl);
+  if (!targetPath) {
+    return undefined;
+  }
+
+  return context.pages().find((candidatePage) => isNotebookPageMatch(candidatePage.url(), notebookUrl));
+}
+
+function isNotebookPageMatch(currentUrl: string, notebookUrl: string): boolean {
+  return normalizeNotebookPath(currentUrl) === normalizeNotebookPath(notebookUrl);
+}
+
+function normalizeNotebookPath(url: string): string | undefined {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.origin}${parsed.pathname}`.replace(/\/+$/, "");
+  } catch {
+    return undefined;
+  }
 }
 
 async function connectToAttachedChrome(target: ChromeAttachTarget, showBrowser: boolean): Promise<{
@@ -309,6 +463,16 @@ async function ensureNotebookAccessible(page: Page): Promise<void> {
   }
 }
 
+async function waitForNotebookSettled(page: Page, knownInputSelector?: string): Promise<void> {
+  await page.waitForLoadState("domcontentloaded");
+  await page.waitForLoadState("networkidle", { timeout: 5_000 }).catch(() => undefined);
+
+  const inputSelector = knownInputSelector ?? (await waitForFirstVisibleSelector(page, NOTEBOOKLM_QUERY_INPUT_SELECTORS, 10_000));
+  await waitForUsableQueryInput(page, inputSelector, 10_000);
+  await scrollNotebookToLatest(page);
+  await sleep(1_000);
+}
+
 async function looksLikeSignInPage(page: Page): Promise<boolean> {
   const text = (await page.textContent("body").catch(() => null))?.toLowerCase() ?? "";
   return text.includes("sign in") || text.includes("로그인") || text.includes("continue to");
@@ -333,17 +497,91 @@ async function waitForFirstVisibleSelector(page: Page, selectors: readonly strin
   throw new Error("Could not find a visible NotebookLM query input.");
 }
 
-async function snapshotLatestResponse(page: Page): Promise<string | null> {
-  for (const selector of NOTEBOOKLM_RESPONSE_SELECTORS) {
-    const elements = await page.$$(selector);
-    if (elements.length > 0) {
-      const text = (await elements[elements.length - 1]?.innerText())?.trim();
-      if (text) {
-        return text;
+async function waitForUsableQueryInput(page: Page, selector: string, timeout = 10_000): Promise<void> {
+  const deadline = Date.now() + timeout;
+
+  while (Date.now() < deadline) {
+    try {
+      const handle = await page.$(selector);
+      if (handle && (await handle.isVisible())) {
+        const isUsable = await handle.evaluate((node) => {
+          const textarea = node as { disabled?: boolean; readOnly?: boolean };
+          return !textarea.disabled && !textarea.readOnly;
+        });
+
+        if (isUsable) {
+          return;
+        }
       }
+    } catch {}
+
+    await sleep(250);
+  }
+
+  throw new Error("NotebookLM query input did not become usable in time.");
+}
+
+async function snapshotLatestResponse(page: Page): Promise<string | null> {
+  const latestElement = await getLatestResponseElement(page);
+  if (latestElement) {
+    const text = extractNormalizedAnswerFromSnapshot(await collectResponseTextSnapshot(latestElement));
+    if (text) {
+      return text;
     }
   }
   return null;
+}
+
+async function getLatestResponseElement(page: Page): Promise<ElementHandle | null> {
+  for (const selector of NOTEBOOKLM_RESPONSE_SELECTORS) {
+    const elements = await page.$$(selector);
+    const latestElement = elements[elements.length - 1];
+    if (latestElement) {
+      return latestElement;
+    }
+  }
+  return null;
+}
+
+async function waitForLatestVisibleResponse(page: Page, timeout: number): Promise<ElementHandle | null> {
+  const deadline = Date.now() + timeout;
+
+  while (Date.now() < deadline) {
+    await scrollNotebookToLatest(page);
+    const latestElement = await getLatestResponseElement(page);
+    if (latestElement) {
+      try {
+        if (await latestElement.isVisible()) {
+          const text = extractNormalizedAnswerFromSnapshot(await collectResponseTextSnapshot(latestElement));
+          if (text) {
+            return latestElement;
+          }
+        }
+      } catch {}
+    }
+
+    await sleep(250);
+  }
+
+  return null;
+}
+
+async function scrollNotebookToLatest(page: Page): Promise<void> {
+  await page
+    .evaluate(() => {
+      const g = globalThis as unknown as {
+        document: {
+          body: { scrollHeight: number; scrollTo?: (options: { top: number; behavior: string }) => void };
+          documentElement?: { scrollHeight: number; scrollTo?: (options: { top: number; behavior: string }) => void };
+          scrollingElement?: { scrollHeight: number; scrollTo?: (options: { top: number; behavior: string }) => void };
+        };
+        scrollTo: (options: { top: number; behavior: string }) => void;
+      };
+      const scrollingElement = g.document.scrollingElement ?? g.document.documentElement ?? g.document.body;
+      scrollingElement.scrollTo?.({ top: scrollingElement.scrollHeight, behavior: "instant" });
+      g.scrollTo({ top: g.document.body.scrollHeight, behavior: "instant" });
+    })
+    .catch(() => undefined);
 }
 
 async function waitForStableLatestResponse(page: Page, previousAnswer: string | null): Promise<ElementHandle> {
@@ -366,7 +604,7 @@ async function waitForStableLatestResponse(page: Page, previousAnswer: string | 
         continue;
       }
 
-      const candidateText = (await candidate.innerText()).trim();
+      const candidateText = extractNormalizedAnswerFromSnapshot(await collectResponseTextSnapshot(candidate));
       if (!candidateText || candidateText === previousAnswer) {
         continue;
       }
@@ -390,27 +628,492 @@ async function waitForStableLatestResponse(page: Page, previousAnswer: string | 
   throw new Error("Timed out waiting for NotebookLM to return a stable answer.");
 }
 
-async function extractCitationReferences(element: ElementHandle): Promise<CitationReference[]> {
-  const links = await element.$$("a[href]");
-  const citations: CitationReference[] = [];
+async function collectResponseTextSnapshot(element: ElementHandle): Promise<NotebookLMResponseSnapshot> {
+  return element.evaluate(
+    (root, selectors) => {
+      const normalize = (value: string | null | undefined): string => (value ?? "").replace(/\u00a0/g, " ").trim();
+      type QueryableNode = {
+        textContent?: string | null;
+        innerText?: string;
+        childNodes?: Iterable<unknown>;
+        nodeType?: number;
+        getAttribute?: (name: string) => string | null;
+        matches?: (selector: string) => boolean;
+        querySelectorAll?: (selector: string) => Iterable<unknown>;
+      };
+      const dedupe = <T>(items: T[], key: (item: T) => string): T[] => {
+        const seen = new Set<string>();
+        return items.filter((item) => {
+          const itemKey = key(item);
+          if (!itemKey || seen.has(itemKey)) {
+            return false;
+          }
+          seen.add(itemKey);
+          return true;
+        });
+      };
+      const queryAll = (scope: QueryableNode, selector: string): unknown[] =>
+        scope.querySelectorAll ? [...scope.querySelectorAll(selector)] : [];
+      const extractMarkerLabels = (scope: QueryableNode): string[] => {
+        const markerNodes = queryAll(scope, ".citation-marker, .citation-marker [aria-label]");
+        const labels = markerNodes
+          .map((node) => {
+            const elementNode = node as QueryableNode;
+            const ariaLabel = normalize(elementNode.getAttribute?.("aria-label"));
+            const text = normalize(elementNode.innerText || elementNode.textContent || "");
+            const numbered = ariaLabel.match(/^(\d+)\s*:/);
+            if (numbered?.[1]) {
+              return numbered[1];
+            }
+            if (/^\d+$/.test(text)) {
+              return text;
+            }
+            return "";
+          })
+          .filter((value, index, array) => value && array.indexOf(value) === index);
 
-  for (const link of links) {
-    const href = await link.getAttribute("href");
-    const label = (await link.innerText()).trim() || href || "citation";
-    if (!href && !label) {
+        return labels;
+      };
+      const extractMarkerLabel = (scope: QueryableNode): string => {
+        const ariaLabel = normalize(scope.getAttribute?.("aria-label"));
+        const text = normalize(scope.innerText || scope.textContent || "");
+        const numbered = ariaLabel.match(/^(\d+)\s*:/);
+        if (numbered?.[1]) {
+          return numbered[1];
+        }
+        if (/^\d+$/.test(text)) {
+          return text;
+        }
+        return "";
+      };
+      const serializeBodyNode = (scope: QueryableNode): string => {
+        if (scope.nodeType === 3) {
+          return scope.textContent ?? "";
+        }
+
+        if (scope.matches?.(".citation-marker, .citation-marker [aria-label]")) {
+          const label = extractMarkerLabel(scope);
+          return label ? `[${label}]` : "";
+        }
+
+        const childNodes = scope.childNodes ? [...scope.childNodes] : [];
+        if (childNodes.length === 0) {
+          return scope.textContent ?? "";
+        }
+
+        return childNodes.map((child) => serializeBodyNode(child as QueryableNode)).join("");
+      };
+
+      const bodyTexts = dedupe(
+        selectors.answerBodySelectors.flatMap((selector) =>
+          queryAll(root as QueryableNode, selector).map((node) => {
+            const elementNode = node as QueryableNode;
+            const text = normalize(serializeBodyNode(elementNode));
+            if (!text) {
+              return "";
+            }
+            return text;
+          })
+        ),
+        (item) => item
+      );
+
+      const rootNode = root as QueryableNode;
+      return {
+        responseText: normalize(rootNode.innerText || rootNode.textContent || ""),
+        bodyTexts,
+        citationCandidates: []
+      };
+    },
+    {
+      answerBodySelectors: NOTEBOOKLM_ANSWER_BODY_SELECTORS
+    }
+  );
+}
+
+async function collectResponseSnapshot(page: Page, element: ElementHandle): Promise<NotebookLMResponseSnapshot> {
+  const markerAttribute = "data-sourceloop-citation-marker";
+  const overflowAttribute = "data-sourceloop-citation-overflow";
+  await expandCitationOverflowControls(page, element, overflowAttribute);
+  const snapshotElement = (await getLatestResponseElement(page)) ?? element;
+  const snapshot = await snapshotElement.evaluate(
+    (root, selectors) => {
+      const normalize = (value: string | null | undefined): string => (value ?? "").replace(/\u00a0/g, " ").trim();
+      type QueryableNode = {
+        textContent?: string | null;
+        innerText?: string;
+        childNodes?: Iterable<unknown>;
+        nodeType?: number;
+        className?: string;
+        href?: string;
+        title?: string;
+        parentElement?: QueryableNode | null;
+        dataset?: { testid?: string };
+        getAttribute?: (name: string) => string | null;
+        setAttribute?: (name: string, value: string) => void;
+        matches?: (selector: string) => boolean;
+        closest?: (selector: string) => QueryableNode | null;
+        querySelectorAll?: (selector: string) => Iterable<unknown>;
+      };
+      const dedupe = <T>(items: T[], key: (item: T) => string): T[] => {
+        const seen = new Set<string>();
+        return items.filter((item) => {
+          const itemKey = key(item);
+          if (!itemKey || seen.has(itemKey)) {
+            return false;
+          }
+          seen.add(itemKey);
+          return true;
+        });
+      };
+      const queryAll = (scope: QueryableNode, selector: string): unknown[] =>
+        scope.querySelectorAll ? [...scope.querySelectorAll(selector)] : [];
+      const extractMarkerLabels = (scope: QueryableNode): string[] => {
+        const markerNodes = queryAll(scope, ".citation-marker, .citation-marker [aria-label]");
+        const labels = markerNodes
+          .map((node) => {
+            const elementNode = node as QueryableNode;
+            const ariaLabel = normalize(elementNode.getAttribute?.("aria-label"));
+            const text = normalize(elementNode.innerText || elementNode.textContent || "");
+            const numbered = ariaLabel.match(/^(\d+)\s*:/);
+            if (numbered?.[1]) {
+              return numbered[1];
+            }
+            if (/^\d+$/.test(text)) {
+              return text;
+            }
+            return "";
+          })
+          .filter((value, index, array) => value && array.indexOf(value) === index);
+
+        return labels;
+      };
+      const extractMarkerLabel = (scope: QueryableNode): string => {
+        const ariaLabel = normalize(scope.getAttribute?.("aria-label"));
+        const text = normalize(scope.innerText || scope.textContent || "");
+        const numbered = ariaLabel.match(/^(\d+)\s*:/);
+        if (numbered?.[1]) {
+          return numbered[1];
+        }
+        if (/^\d+$/.test(text)) {
+          return text;
+        }
+        return "";
+      };
+      const serializeBodyNode = (scope: QueryableNode): string => {
+        if (scope.nodeType === 3) {
+          return scope.textContent ?? "";
+        }
+
+        if (scope.matches?.(".citation-marker, .citation-marker [aria-label]")) {
+          const label = extractMarkerLabel(scope);
+          return label ? `[${label}]` : "";
+        }
+
+        const childNodes = scope.childNodes ? [...scope.childNodes] : [];
+        if (childNodes.length === 0) {
+          return scope.textContent ?? "";
+        }
+
+        return childNodes.map((child) => serializeBodyNode(child as QueryableNode)).join("");
+      };
+      const collectCitationScopes = (start: QueryableNode): QueryableNode[] => {
+        const scopes: QueryableNode[] = [start];
+        let current = start.parentElement ?? null;
+        let depth = 0;
+
+        while (current && depth < 3) {
+          scopes.push(current);
+          current = current.parentElement ?? null;
+          depth += 1;
+        }
+
+        return scopes;
+      };
+
+      const bodyTexts = dedupe(
+        selectors.answerBodySelectors.flatMap((selector) =>
+          queryAll(root as QueryableNode, selector).map((node) => {
+            const elementNode = node as QueryableNode;
+            const text = normalize(serializeBodyNode(elementNode));
+            if (!text) {
+              return "";
+            }
+            return text;
+          })
+        ),
+        (item) => item
+      );
+
+      const citationScopes = collectCitationScopes(root as QueryableNode);
+      let markerCounter = 0;
+      const citationCandidates = dedupe(
+        citationScopes.flatMap((scope) =>
+          selectors.citationSelectors.flatMap((selector) =>
+            queryAll(scope, selector).map((node) => {
+              const elementNode = node as QueryableNode;
+              const markerNode = elementNode.closest?.(".citation-marker") ?? elementNode;
+              let markerId = normalize(markerNode.getAttribute?.(selectors.markerAttribute));
+              if (!markerId) {
+                markerCounter += 1;
+                markerId = `marker-${markerCounter}`;
+                markerNode.setAttribute?.(selectors.markerAttribute, markerId);
+              }
+              return {
+                text: normalize(elementNode.innerText || elementNode.textContent || ""),
+                ariaLabel: normalize(elementNode.getAttribute?.("aria-label")),
+                title: normalize(elementNode.getAttribute?.("title") ?? elementNode.title),
+                href: normalize(elementNode.getAttribute?.("href") ?? elementNode.href),
+                markerId,
+                selector,
+                dialogLabel: normalize(elementNode.getAttribute?.("dialoglabel")),
+                triggerDescription: normalize(elementNode.getAttribute?.("triggerdescription")),
+                dataTestId: normalize(elementNode.dataset?.testid),
+                role: normalize(elementNode.getAttribute?.("role")),
+                className: normalize(elementNode.className)
+              };
+            })
+          )
+        ),
+        (item) => JSON.stringify(item)
+      );
+
+      const rootNode = root as QueryableNode;
+      return {
+        responseText: normalize(rootNode.innerText || rootNode.textContent || ""),
+        bodyTexts,
+        citationCandidates
+      };
+    },
+    {
+      answerBodySelectors: NOTEBOOKLM_ANSWER_BODY_SELECTORS,
+      citationSelectors: NOTEBOOKLM_CITATION_SELECTORS,
+      markerAttribute
+    }
+  );
+
+  try {
+    const popoverTextsByMarkerId = await collectCitationPopoverTexts(page, snapshot.citationCandidates, markerAttribute);
+    return {
+      ...snapshot,
+      citationCandidates: snapshot.citationCandidates.map((candidate) => {
+        const popoverText = candidate.markerId ? popoverTextsByMarkerId.get(candidate.markerId) : undefined;
+        return popoverText
+          ? {
+              ...candidate,
+              popoverText
+            }
+          : candidate;
+      })
+    };
+  } finally {
+    await clearTemporaryCitationMarkers(page, markerAttribute);
+    await clearTemporaryCitationMarkers(page, overflowAttribute);
+  }
+}
+
+async function expandCitationOverflowControls(page: Page, element: ElementHandle, overflowAttribute: string): Promise<void> {
+  const candidates = await element.evaluate(
+    (root, selectors) => {
+      const normalize = (value: string | null | undefined): string => (value ?? "").replace(/\u00a0/g, " ").trim();
+      type QueryableNode = {
+        textContent?: string | null;
+        innerText?: string;
+        className?: string;
+        title?: string;
+        parentElement?: QueryableNode | null;
+        dataset?: { testid?: string };
+        getAttribute?: (name: string) => string | null;
+        setAttribute?: (name: string, value: string) => void;
+        closest?: (selector: string) => QueryableNode | null;
+        querySelectorAll?: (selector: string) => Iterable<unknown>;
+      };
+      const queryAll = (scope: QueryableNode, selector: string): unknown[] =>
+        scope.querySelectorAll ? [...scope.querySelectorAll(selector)] : [];
+      const collectScopes = (start: QueryableNode): QueryableNode[] => {
+        const scopes: QueryableNode[] = [start];
+        let current = start.parentElement ?? null;
+        let depth = 0;
+
+        while (current && depth < 3) {
+          scopes.push(current);
+          current = current.parentElement ?? null;
+          depth += 1;
+        }
+
+        return scopes;
+      };
+
+      const isCitationAdjacent = (node: QueryableNode): boolean => {
+        if (node.closest?.(".citation-marker")) {
+          return true;
+        }
+
+        let current = node.parentElement ?? null;
+        let depth = 0;
+        while (current && depth < 3) {
+          const nearbyMarkers = queryAll(current, ".citation-marker");
+          if (nearbyMarkers.length > 0) {
+            return true;
+          }
+          current = current.parentElement ?? null;
+          depth += 1;
+        }
+
+        return false;
+      };
+
+      const scopes = collectScopes(root as QueryableNode);
+      let counter = 0;
+      const seen = new Set<string>();
+      const results: NotebookLMCitationOverflowCandidate[] = [];
+
+      for (const scope of scopes) {
+        for (const selector of selectors.overflowSelectors) {
+          for (const node of queryAll(scope, selector)) {
+            const elementNode = node as QueryableNode;
+            const overflowId = `overflow-${++counter}`;
+            elementNode.setAttribute?.(selectors.overflowAttribute, overflowId);
+
+            const candidate = {
+              overflowId,
+              text: normalize(elementNode.innerText || elementNode.textContent || ""),
+              ariaLabel: normalize(elementNode.getAttribute?.("aria-label")),
+              title: normalize(elementNode.getAttribute?.("title") ?? elementNode.title),
+              className: normalize(elementNode.className),
+              dataTestId: normalize(elementNode.dataset?.testid),
+              selector,
+              citationAdjacent: isCitationAdjacent(elementNode)
+            };
+
+            const key = JSON.stringify(candidate);
+            if (seen.has(key)) {
+              continue;
+            }
+            seen.add(key);
+            results.push(candidate);
+          }
+        }
+      }
+
+      return results;
+    },
+    {
+      overflowSelectors: NOTEBOOKLM_CITATION_OVERFLOW_SELECTORS,
+      overflowAttribute
+    }
+  );
+
+  for (const candidate of candidates.filter((item) => shouldExpandCitationOverflowControl(item))) {
+    const locator = page.locator(`[${overflowAttribute}="${escapeAttributeValue(candidate.overflowId)}"]`).first();
+    try {
+      if ((await locator.count()) === 0 || !(await locator.isVisible())) {
+        continue;
+      }
+      await locator.click({ timeout: 1_000 });
+      await sleep(250);
+    } catch {}
+  }
+}
+
+async function collectCitationPopoverTexts(
+  page: Page,
+  candidates: NotebookLMResponseSnapshot["citationCandidates"],
+  markerAttribute: string
+): Promise<Map<string, string>> {
+  const markerIds = [...new Set(candidates.map((candidate) => candidate.markerId).filter((value): value is string => Boolean(value)))];
+  const popoverTextsByMarkerId = new Map<string, string>();
+
+  for (const markerId of markerIds) {
+    const markerLocator = page.locator(`[${markerAttribute}="${escapeAttributeValue(markerId)}"]`).first();
+    if ((await markerLocator.count()) === 0) {
       continue;
     }
-    citations.push({
-      label,
-      ...(href ? { href } : {})
-    });
+
+    const previousPopoverTexts = await captureVisibleCitationPopoverTexts(page);
+
+    try {
+      await markerLocator.hover();
+      const popoverText = await waitForCitationPopoverText(page, previousPopoverTexts, 2_000);
+      if (popoverText) {
+        popoverTextsByMarkerId.set(markerId, popoverText);
+      }
+    } catch {}
   }
 
-  if (citations.length > 0) {
-    return citations;
+  return popoverTextsByMarkerId;
+}
+
+async function captureVisibleCitationPopoverTexts(page: Page): Promise<string[]> {
+  return page.evaluate((selectors) => {
+    const g = globalThis as unknown as {
+      document: { querySelectorAll: (selector: string) => Iterable<unknown> };
+      getComputedStyle: (element: { getBoundingClientRect: () => { width: number; height: number } }) => {
+        visibility: string;
+        display: string;
+      };
+    };
+    const normalize = (value: string | null | undefined): string => (value ?? "").replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
+    const values = selectors.flatMap((selector) =>
+      [...g.document.querySelectorAll(selector)].map((node) => {
+        const element = node as {
+          innerText?: string;
+          textContent?: string | null;
+          getBoundingClientRect: () => { width: number; height: number };
+        };
+        const style = g.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        if (style.visibility === "hidden" || style.display === "none" || rect.width === 0 || rect.height === 0) {
+          return "";
+        }
+
+        return normalize(element.innerText || element.textContent || "");
+      })
+    );
+
+    return [...new Set(values.filter((value) => value && value !== "인용 세부정보"))];
+  }, NOTEBOOKLM_CITATION_POPOVER_SELECTORS);
+}
+
+async function waitForCitationPopoverText(page: Page, previousTexts: string[], timeoutMs: number): Promise<string | undefined> {
+  const deadline = Date.now() + timeoutMs;
+  const previous = new Set(previousTexts);
+
+  while (Date.now() < deadline) {
+    const currentTexts = await captureVisibleCitationPopoverTexts(page);
+    const next = currentTexts.find((text) => !previous.has(text));
+    if (next) {
+      return next;
+    }
+
+    const stable = currentTexts.find((text) => text.length > 0 && text !== "인용 세부정보");
+    if (stable && currentTexts.length === 1 && previousTexts.length === 0) {
+      return stable;
+    }
+
+    await sleep(150);
   }
 
-  return [{ label: "NotebookLM UI citation not captured", note: "No visible citation links were extracted from the latest answer." }];
+  return undefined;
+}
+
+async function clearTemporaryCitationMarkers(page: Page, markerAttribute: string): Promise<void> {
+  await page
+    .evaluate((attributeName) => {
+      const g = globalThis as unknown as { document: { querySelectorAll: (selector: string) => Iterable<unknown> } };
+      for (const node of g.document.querySelectorAll(`[${attributeName}]`)) {
+        (node as { removeAttribute: (name: string) => void }).removeAttribute(attributeName);
+      }
+    }, markerAttribute)
+    .catch(() => undefined);
+}
+
+function escapeAttributeValue(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+function normalizeControlText(value?: string | null): string {
+  return (value ?? "").replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
 }
 
 async function clearQueryInput(page: Page, selector: string): Promise<void> {

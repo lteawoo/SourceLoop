@@ -52,6 +52,217 @@ Expected:
 
 ## Manual Verification
 
+## Exact Command Walkthrough
+
+This is the concrete command sequence used during real manual testing in this repo.
+
+### 0. Build the CLI
+
+Run:
+
+```bash
+cd /Users/twlee/projects/SourceLoop
+pnpm build
+pnpm test
+```
+
+### 1. Create a fresh workspace
+
+Run:
+
+```bash
+mkdir -p /Users/twlee/projects/SourceLoop/tmp/demo-workspace
+node /Users/twlee/projects/SourceLoop/dist/index.js init /Users/twlee/projects/SourceLoop/tmp/demo-workspace
+cd /Users/twlee/projects/SourceLoop/tmp/demo-workspace
+```
+
+Check:
+
+- `.sourceloop/config.json` exists
+- `vault/` subdirectories exist
+
+### 2. Create the topic
+
+Run:
+
+```bash
+node /Users/twlee/projects/SourceLoop/dist/index.js topic create \
+  --name "Professional Web Design with Claude Code"
+
+node /Users/twlee/projects/SourceLoop/dist/index.js topic list
+```
+
+Expected topic id:
+
+```text
+topic-professional-web-design-with-claude-code
+```
+
+### 3. Add a local source anchor
+
+NotebookLM may already contain the real YouTube source. The current SourceLoop workflow still expects one local topic source note.
+
+Run:
+
+```bash
+echo 'NotebookLM already contains the YouTube sources for "Professional Web Design with Claude Code".' > notebooklm-manifest.md
+
+node /Users/twlee/projects/SourceLoop/dist/index.js ingest \
+  notebooklm-manifest.md \
+  --topic topic-professional-web-design-with-claude-code
+```
+
+### 4. Launch Chrome manually with remote debugging
+
+Run this in a separate terminal and leave it open:
+
+```bash
+"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+  --user-data-dir="/Users/twlee/projects/SourceLoop/tmp/chrome-test-profile" \
+  --remote-debugging-port=9222 \
+  --no-first-run \
+  --no-default-browser-check \
+  "https://notebooklm.google.com/"
+```
+
+Then:
+
+- sign in to Google manually
+- open the target NotebookLM notebook
+
+Optional check:
+
+```bash
+curl http://127.0.0.1:9222/json/version
+```
+
+### 5. Register the attached Chrome endpoint
+
+Run:
+
+```bash
+node /Users/twlee/projects/SourceLoop/dist/index.js attach endpoint \
+  --name test-chrome \
+  --endpoint http://127.0.0.1:9222
+```
+
+If the target already exists, either reuse it or overwrite it:
+
+```bash
+node /Users/twlee/projects/SourceLoop/dist/index.js attach endpoint \
+  --name test-chrome \
+  --endpoint http://127.0.0.1:9222 \
+  --force
+```
+
+### 6. Validate the NotebookLM target
+
+Important: use a real notebook URL, not the NotebookLM home page.
+
+Run:
+
+```bash
+node /Users/twlee/projects/SourceLoop/dist/index.js attach validate \
+  attach-test-chrome \
+  --notebook-url "https://notebooklm.google.com/notebook/<real-notebook-id>" \
+  --show-browser
+```
+
+Check:
+
+- validation completes
+- shell prompt returns
+- attached Chrome stays open
+
+### 7. Create the notebook binding
+
+Run:
+
+```bash
+node /Users/twlee/projects/SourceLoop/dist/index.js notebook-bind \
+  --name "Claude Code Web Design" \
+  --topic-id topic-professional-web-design-with-claude-code \
+  --url "https://notebooklm.google.com/notebook/<real-notebook-id>" \
+  --attach-target attach-test-chrome
+```
+
+### 8. Create a question plan
+
+Run:
+
+```bash
+node /Users/twlee/projects/SourceLoop/dist/index.js plan \
+  topic-professional-web-design-with-claude-code
+```
+
+Capture the printed `run-id`.
+
+### 9. Run NotebookLM end to end
+
+Run:
+
+```bash
+node /Users/twlee/projects/SourceLoop/dist/index.js run <run-id> --show-browser
+```
+
+Check:
+
+- NotebookLM receives the questions
+- the shell prompt returns after completion
+- attached Chrome stays open
+- exchange notes are created under `vault/runs/<run-id>/exchanges/`
+
+### 10. Import the latest existing NotebookLM answer without asking a new question
+
+Use this when a reply already exists in NotebookLM and you want to backfill the latest answer into the run archive.
+
+Run:
+
+```bash
+node /Users/twlee/projects/SourceLoop/dist/index.js import-latest <run-id> --show-browser
+```
+
+Optional explicit question mapping:
+
+```bash
+node /Users/twlee/projects/SourceLoop/dist/index.js import-latest <run-id> \
+  --question-id <question-id> \
+  --show-browser
+```
+
+Check:
+
+- the latest visible NotebookLM answer is archived
+- a new exchange note or updated next-question exchange appears in `vault/runs/<run-id>/exchanges/`
+
+### 11. Inspect the archive
+
+Run:
+
+```bash
+node /Users/twlee/projects/SourceLoop/dist/index.js topic show \
+  topic-professional-web-design-with-claude-code
+
+ls /Users/twlee/projects/SourceLoop/tmp/demo-workspace/vault/runs
+cat /Users/twlee/projects/SourceLoop/tmp/demo-workspace/vault/runs/<run-id>/professional-web-design-with-claude-code-run.md
+cat /Users/twlee/projects/SourceLoop/tmp/demo-workspace/vault/runs/<run-id>/professional-web-design-with-claude-code-questions.md
+ls /Users/twlee/projects/SourceLoop/tmp/demo-workspace/vault/runs/<run-id>/exchanges
+```
+
+### 12. Open in Obsidian
+
+Open this folder in Obsidian:
+
+```text
+/Users/twlee/projects/SourceLoop/tmp/demo-workspace/vault
+```
+
+Check:
+
+- topic, notebook, run, questions, and answers are linked
+- note titles are human-readable
+- graph/backlinks behave as expected
+
 ### 1. Workspace Bootstrap
 
 Run:
