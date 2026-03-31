@@ -3,6 +3,14 @@ import { z } from "zod";
 export const runStatusSchema = z.enum(["planned", "running", "completed", "incomplete", "failed"]);
 export const questionKindSchema = z.enum(["core", "structure", "deep_dive", "comparison", "execution", "evidence_gap"]);
 
+export const plannedQuestionDraftSchema = z.object({
+  kind: questionKindSchema,
+  prompt: z.string().min(1),
+  objective: z.string().min(1)
+});
+
+export const plannedQuestionDraftListSchema = z.array(plannedQuestionDraftSchema).min(1);
+
 export const plannedQuestionSchema = z.object({
   id: z.string().min(1),
   kind: questionKindSchema,
@@ -14,6 +22,10 @@ export const plannedQuestionSchema = z.object({
 export const planningScopeSchema = z.object({
   maxQuestions: z.number().int().positive().optional(),
   selectedFamilies: z.array(questionKindSchema).min(1).optional()
+});
+
+export const plannedQuestionDraftBundleSchema = z.object({
+  questions: plannedQuestionDraftListSchema
 });
 
 export const executionScopeSchema = z.object({
@@ -88,6 +100,7 @@ export const outputArtifactSchema = z.object({
 });
 
 export type CitationReference = z.infer<typeof citationReferenceSchema>;
+export type PlannedQuestionDraft = z.infer<typeof plannedQuestionDraftSchema>;
 export type PlannedQuestion = z.infer<typeof plannedQuestionSchema>;
 export type PlanningScope = z.infer<typeof planningScopeSchema>;
 export type ExecutionScope = z.infer<typeof executionScopeSchema>;

@@ -42,4 +42,17 @@ program.addCommand(planCommand);
 program.addCommand(runCommand);
 program.addCommand(composeCommand);
 
-await program.parseAsync(process.argv);
+try {
+  await program.parseAsync(process.argv);
+} catch (error) {
+  const exitCode =
+    typeof error === "object" &&
+    error !== null &&
+    "exitCode" in error &&
+    typeof error.exitCode === "number"
+      ? error.exitCode
+      : 1;
+  const message = error instanceof Error ? error.message : String(error);
+  console.error(message.startsWith("error:") ? message : `error: ${message}`);
+  process.exit(exitCode);
+}

@@ -1,8 +1,5 @@
-# research-question-planning-controls Specification
+## MODIFIED Requirements
 
-## Purpose
-TBD - created by archiving change research-run-controls. Update Purpose after archive.
-## Requirements
 ### Requirement: Topic-backed planning SHALL support bounded question counts
 The system SHALL allow operators to request fewer than the default planned questions when creating a topic-backed research batch, regardless of whether the batch originates from the built-in template planner or AI-authored question drafts.
 
@@ -35,4 +32,3 @@ The system SHALL render enough planner metadata in the question batch archive to
 - **WHEN** a question batch is created with a reduced question count or selected families
 - **THEN** the questions note SHALL render that planning scope
 - **AND** the run metadata SHALL preserve the same scope for later review
-

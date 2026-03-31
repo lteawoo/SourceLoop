@@ -9,7 +9,7 @@ Use SourceLoop as a research operator that:
 3. prepares an attached Chrome session for NotebookLM
 4. prepares a NotebookLM notebook
 5. imports or declares evidence
-6. plans bounded questions
+6. generates topic-tailored bounded questions
 7. runs small research batches
 8. archives answers into the vault
 
@@ -46,6 +46,7 @@ The agent should avoid guessing hidden state when the CLI can report it directly
 - When asking for the topic, mention that planning defaults to 10 questions unless the user wants another count
 - If the user provided a topic but no sources, ask which sources to use before collecting or importing anything
 - When the topic is first set, confirm whether to keep the default 10-question plan or use another count
+- Prefer AI-authored topic-specific questions when the operator can generate them, and pass them into `plan` with `--questions-file`
 - Do not autonomously search the web or choose source materials unless the user explicitly asked the agent to find sources
 - Do not run `plan` unless the topic has usable evidence
 - Do not run `run` unless the topic has a bound notebook and a planned run
@@ -191,6 +192,7 @@ sourceloop notebook-import \
 
 sourceloop doctor --json
 sourceloop plan topic-ai-agents-market --max-questions 10 --json
+sourceloop plan topic-ai-agents-market --questions-file ./ai-questions.json --json
 sourceloop run <run-id> --json
 ```
 

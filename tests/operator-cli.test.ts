@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -25,6 +25,8 @@ import { executeQARun } from "../src/core/runs/run-qa.js";
 import { createTopic } from "../src/core/topics/manage-topics.js";
 import { initializeWorkspace } from "../src/core/workspace/init-workspace.js";
 import { ingestSource } from "../src/core/ingest/ingest-source.js";
+import { loadWorkspace } from "../src/core/workspace/load-workspace.js";
+import { getVaultPaths } from "../src/core/vault/paths.js";
 import { registerChromeEndpointTarget, registerChromeProfileTarget } from "../src/core/attach/manage-targets.js";
 import type { ManagedNotebookBrowserImportInput, NotebookBrowserSession, NotebookBrowserSessionFactory } from "../src/core/notebooklm/browser-agent.js";
 
@@ -781,6 +783,425 @@ describe("operator CLI workflow", () => {
 
     expect(planJson.batch.questions).toHaveLength(DEFAULT_MAX_QUESTIONS);
     expect(planJson.batch.planningScope?.maxQuestions).toBe(DEFAULT_MAX_QUESTIONS);
+  });
+
+  it("loads AI-authored questions from a JSON file during planning", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
+    await initializeWorkspace({ directory: workspaceRoot, force: false });
+    process.chdir(workspaceRoot);
+
+    await captureStdout(() =>
+      topicCommand.parseAsync(["create", "--name", "AI Planned Topic", "--json"], { from: "user" })
+    );
+
+    const notebookBindJson = JSON.parse(
+      await captureStdout(() =>
+        notebookBindCommand.parseAsync(
+          [
+            "--name",
+            "AI Planned Notebook",
+            "--topic-id",
+            "topic-ai-planned-topic",
+            "--url",
+            "https://notebooklm.google.com/notebook/ai-planned-topic",
+            "--json"
+          ],
+          { from: "user" }
+        )
+      )
+    ) as { binding: { id: string } };
+
+    await captureStdout(() =>
+      notebookSourceCommand.parseAsync(
+        [
+          "declare",
+          "--topic-id",
+          "topic-ai-planned-topic",
+          "--notebook",
+          notebookBindJson.binding.id,
+          "--kind",
+          "document-set",
+          "--title",
+          "AI Planned Source Set",
+          "--json"
+        ],
+        { from: "user" }
+      )
+    );
+
+    const questionsPath = path.join(workspaceRoot, "ai-questions.json");
+    await writeFile(
+      questionsPath,
+      JSON.stringify(
+        {
+          questions: [
+            {
+              kind: "core",
+              objective: "Frame the space.",
+              prompt: "What is the actual problem space behind AI planned topic?"
+            },
+            {
+              kind: "execution",
+              objective: "Turn the topic into a field guide.",
+              prompt: "What sequence should a team follow to apply AI planned topic in practice?"
+            }
+          ]
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
+
+    const planJson = JSON.parse(
+      await captureStdout(() =>
+        planCommand.parseAsync(["topic-ai-planned-topic", "--questions-file", questionsPath, "--json"], { from: "user" })
+      )
+    ) as {
+      batch: {
+        questions: Array<{ kind: string; objective: string; prompt: string }>;
+        questionFamilies: string[];
+      };
+    };
+
+    expect(planJson.batch.questions).toHaveLength(2);
+    expect(planJson.batch.questionFamilies).toEqual(["core", "execution"]);
+    expect(planJson.batch.questions[0]).toMatchObject({
+      kind: "core",
+      objective: "Frame the space.",
+      prompt: "What is the actual problem space behind AI planned topic?"
+    });
+    expect(planJson.batch.questions[1]).toMatchObject({
+      kind: "execution",
+      objective: "Turn the topic into a field guide.",
+      prompt: "What sequence should a team follow to apply AI planned topic in practice?"
+    });
+  });
+
+  it("fails closed when an AI-authored question file contains an unsupported family", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
+    await initializeWorkspace({ directory: workspaceRoot, force: false });
+    process.chdir(workspaceRoot);
+
+    await captureStdout(() =>
+      topicCommand.parseAsync(["create", "--name", "Invalid Family Topic", "--json"], { from: "user" })
+    );
+
+    const notebookBindJson = JSON.parse(
+      await captureStdout(() =>
+        notebookBindCommand.parseAsync(
+          [
+            "--name",
+            "Invalid Family Notebook",
+            "--topic-id",
+            "topic-invalid-family-topic",
+            "--url",
+            "https://notebooklm.google.com/notebook/invalid-family",
+            "--json"
+          ],
+          { from: "user" }
+        )
+      )
+    ) as { binding: { id: string } };
+
+    await captureStdout(() =>
+      notebookSourceCommand.parseAsync(
+        [
+          "declare",
+          "--topic-id",
+          "topic-invalid-family-topic",
+          "--notebook",
+          notebookBindJson.binding.id,
+          "--kind",
+          "document-set",
+          "--title",
+          "Invalid Family Source Set",
+          "--json"
+        ],
+        { from: "user" }
+      )
+    );
+
+    const questionsPath = path.join(workspaceRoot, "invalid-family-questions.json");
+    await writeFile(
+      questionsPath,
+      JSON.stringify(
+        {
+          questions: [
+            {
+              kind: "synthesis",
+              objective: "Invent an unsupported family.",
+              prompt: "What unsupported synthesis view matters here?"
+            }
+          ]
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
+
+    await expect(
+      planCommand.parseAsync(["topic-invalid-family-topic", "--questions-file", questionsPath, "--json"], { from: "user" })
+    ).rejects.toThrow();
+
+    const workspace = await loadWorkspace(workspaceRoot);
+    const vault = getVaultPaths(workspace);
+    expect(await readdir(vault.runsDir)).toHaveLength(0);
+  });
+
+  it("fails closed when an AI-authored question file is an empty top-level array", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
+    await initializeWorkspace({ directory: workspaceRoot, force: false });
+    process.chdir(workspaceRoot);
+
+    await captureStdout(() =>
+      topicCommand.parseAsync(["create", "--name", "Empty Array Topic", "--json"], { from: "user" })
+    );
+
+    const notebookBindJson = JSON.parse(
+      await captureStdout(() =>
+        notebookBindCommand.parseAsync(
+          [
+            "--name",
+            "Empty Array Notebook",
+            "--topic-id",
+            "topic-empty-array-topic",
+            "--url",
+            "https://notebooklm.google.com/notebook/empty-array",
+            "--json"
+          ],
+          { from: "user" }
+        )
+      )
+    ) as { binding: { id: string } };
+
+    await captureStdout(() =>
+      notebookSourceCommand.parseAsync(
+        [
+          "declare",
+          "--topic-id",
+          "topic-empty-array-topic",
+          "--notebook",
+          notebookBindJson.binding.id,
+          "--kind",
+          "document-set",
+          "--title",
+          "Empty Array Source Set",
+          "--json"
+        ],
+        { from: "user" }
+      )
+    );
+
+    const questionsPath = path.join(workspaceRoot, "empty-array-questions.json");
+    await writeFile(questionsPath, "[]", "utf8");
+
+    await expect(
+      planCommand.parseAsync(["topic-empty-array-topic", "--questions-file", questionsPath, "--json"], { from: "user" })
+    ).rejects.toThrow(/Invalid questions file/);
+
+    const workspace = await loadWorkspace(workspaceRoot);
+    const vault = getVaultPaths(workspace);
+    expect(await readdir(vault.runsDir)).toHaveLength(0);
+  });
+
+  it("fails closed when an AI-authored question file omits required fields", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
+    await initializeWorkspace({ directory: workspaceRoot, force: false });
+    process.chdir(workspaceRoot);
+
+    await captureStdout(() =>
+      topicCommand.parseAsync(["create", "--name", "Missing Field Topic", "--json"], { from: "user" })
+    );
+
+    const notebookBindJson = JSON.parse(
+      await captureStdout(() =>
+        notebookBindCommand.parseAsync(
+          [
+            "--name",
+            "Missing Field Notebook",
+            "--topic-id",
+            "topic-missing-field-topic",
+            "--url",
+            "https://notebooklm.google.com/notebook/missing-field",
+            "--json"
+          ],
+          { from: "user" }
+        )
+      )
+    ) as { binding: { id: string } };
+
+    await captureStdout(() =>
+      notebookSourceCommand.parseAsync(
+        [
+          "declare",
+          "--topic-id",
+          "topic-missing-field-topic",
+          "--notebook",
+          notebookBindJson.binding.id,
+          "--kind",
+          "document-set",
+          "--title",
+          "Missing Field Source Set",
+          "--json"
+        ],
+        { from: "user" }
+      )
+    );
+
+    const questionsPath = path.join(workspaceRoot, "missing-field-questions.json");
+    await writeFile(
+      questionsPath,
+      JSON.stringify(
+        {
+          questions: [
+            {
+              kind: "core",
+              prompt: "What is the real problem space behind missing-field topic?"
+            }
+          ]
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
+
+    await expect(
+      planCommand.parseAsync(["topic-missing-field-topic", "--questions-file", questionsPath, "--json"], { from: "user" })
+    ).rejects.toThrow();
+
+    const workspace = await loadWorkspace(workspaceRoot);
+    const vault = getVaultPaths(workspace);
+    expect(await readdir(vault.runsDir)).toHaveLength(0);
+  });
+
+  it("returns a clear validation error for malformed AI-authored question files", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
+    await initializeWorkspace({ directory: workspaceRoot, force: false });
+    process.chdir(workspaceRoot);
+
+    await captureStdout(() =>
+      topicCommand.parseAsync(["create", "--name", "Malformed File Topic", "--json"], { from: "user" })
+    );
+
+    const notebookBindJson = JSON.parse(
+      await captureStdout(() =>
+        notebookBindCommand.parseAsync(
+          [
+            "--name",
+            "Malformed File Notebook",
+            "--topic-id",
+            "topic-malformed-file-topic",
+            "--url",
+            "https://notebooklm.google.com/notebook/malformed-file",
+            "--json"
+          ],
+          { from: "user" }
+        )
+      )
+    ) as { binding: { id: string } };
+
+    await captureStdout(() =>
+      notebookSourceCommand.parseAsync(
+        [
+          "declare",
+          "--topic-id",
+          "topic-malformed-file-topic",
+          "--notebook",
+          notebookBindJson.binding.id,
+          "--kind",
+          "document-set",
+          "--title",
+          "Malformed File Source Set",
+          "--json"
+        ],
+        { from: "user" }
+      )
+    );
+
+    const questionsPath = path.join(workspaceRoot, "malformed-questions.json");
+    await writeFile(questionsPath, "{\"questions\":[", "utf8");
+
+    await expect(
+      planCommand.parseAsync(["topic-malformed-file-topic", "--questions-file", questionsPath, "--json"], { from: "user" })
+    ).rejects.toThrow(new RegExp(`Invalid questions file ${questionsPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+  });
+
+  it("fails closed when planning scope removes all AI-authored questions", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
+    await initializeWorkspace({ directory: workspaceRoot, force: false });
+    process.chdir(workspaceRoot);
+
+    await captureStdout(() =>
+      topicCommand.parseAsync(["create", "--name", "Scope Empty Topic", "--json"], { from: "user" })
+    );
+
+    const notebookBindJson = JSON.parse(
+      await captureStdout(() =>
+        notebookBindCommand.parseAsync(
+          [
+            "--name",
+            "Scope Empty Notebook",
+            "--topic-id",
+            "topic-scope-empty-topic",
+            "--url",
+            "https://notebooklm.google.com/notebook/scope-empty",
+            "--json"
+          ],
+          { from: "user" }
+        )
+      )
+    ) as { binding: { id: string } };
+
+    await captureStdout(() =>
+      notebookSourceCommand.parseAsync(
+        [
+          "declare",
+          "--topic-id",
+          "topic-scope-empty-topic",
+          "--notebook",
+          notebookBindJson.binding.id,
+          "--kind",
+          "document-set",
+          "--title",
+          "Scope Empty Source Set",
+          "--json"
+        ],
+        { from: "user" }
+      )
+    );
+
+    const questionsPath = path.join(workspaceRoot, "scope-empty-questions.json");
+    await writeFile(
+      questionsPath,
+      JSON.stringify(
+        {
+          questions: [
+            {
+              kind: "core",
+              objective: "Frame the topic.",
+              prompt: "What is the core framing behind scope empty topic?"
+            }
+          ]
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
+
+    await expect(
+      planCommand.parseAsync(
+        ["topic-scope-empty-topic", "--questions-file", questionsPath, "--families", "execution", "--json"],
+        { from: "user" }
+      )
+    ).rejects.toThrow("Question planning produced no usable questions after applying the selected planning scope.");
+
+    const workspace = await loadWorkspace(workspaceRoot);
+    const vault = getVaultPaths(workspace);
+    expect(await readdir(vault.runsDir)).toHaveLength(0);
   });
 
   it("surfaces managed notebook setup readiness in status and doctor", async () => {

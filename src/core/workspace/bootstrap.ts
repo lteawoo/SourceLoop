@@ -111,6 +111,7 @@ Use this skill when the current project is a SourceLoop workspace.
 8. Require usable evidence before planning
 9. Execution defaults:
    - planning defaults to 10 questions unless the user asked for a different count
+   - prefer AI-authored topic-specific questions when the operator can generate them, and pass them into \`sourceloop plan\` with \`--questions-file\`
    - once a 10-question batch is planned, prefer running the full batch unless the user explicitly asked for a smaller partial pass
 10. Re-check \`status --json\` after each meaningful step
 11. If a NotebookLM step may take a while, say so briefly before waiting
@@ -171,6 +172,7 @@ Use this skill when the current project is a SourceLoop workspace.
 - Local source files: \`sourceloop ingest ...\` then \`sourceloop notebook-import --source-id ...\` (also for the first source on an empty managed notebook)
 - Remote URLs: \`sourceloop notebook-import --url ...\` (also for the first source on an empty managed notebook)
 - For SourceLoop-managed notebooks, treat the requested notebook title as a label only and read the returned binding id from JSON or \`status --json\`
+- Prefer \`sourceloop plan ... --questions-file ./ai-questions.json --json\` when the operator has already generated a topic-specific question batch
 - Ready topic with no run: \`sourceloop plan ... --max-questions 10 --json\`
 - Planned or incomplete run: \`sourceloop run ... --json\`
 - Existing latest answer only: \`sourceloop import-latest ...\`
@@ -322,8 +324,9 @@ Use this skill when the current project is a SourceLoop workspace.
 7. Prepare notebook before evidence import or declaration
 8. Require usable evidence before planning
 9. Planning defaults to 10 questions unless the user asked for another count
-10. Once a 10-question batch is planned, prefer running the full batch unless the user explicitly asked for a smaller partial pass
-11. Re-check \`sourceloop status --json\` after each meaningful step
+10. Prefer AI-authored topic-specific questions when the operator can generate them, and pass them into \`sourceloop plan\` with \`--questions-file\`
+11. Once a 10-question batch is planned, prefer running the full batch unless the user explicitly asked for a smaller partial pass
+12. Re-check \`sourceloop status --json\` after each meaningful step
 
 ## NotebookLM entry rules
 
@@ -348,6 +351,7 @@ Use this skill when the current project is a SourceLoop workspace.
 - Existing NotebookLM URL: \`sourceloop notebook-bind ...\`, then \`sourceloop notebook-source declare ...\`
 - Local source files: \`sourceloop ingest ...\`, then \`sourceloop notebook-import --source-id ...\`
 - Remote URLs: \`sourceloop notebook-import --url ...\`
+- Prefer \`sourceloop plan ... --questions-file ./ai-questions.json --json\` when the operator has already generated a topic-specific question batch
 - Ready topic with no run: \`sourceloop plan ... --max-questions 10 --json\`
 - Planned or incomplete run: \`sourceloop run ... --json\`
 - Existing latest answer only: \`sourceloop import-latest ...\`
@@ -394,8 +398,9 @@ Use this skill when the current project is a SourceLoop workspace.
 7. Prepare notebook before evidence import or declaration
 8. Require usable evidence before planning
 9. Planning defaults to 10 questions unless the user asked for another count
-10. Once a 10-question batch is planned, prefer running the full batch unless the user explicitly asked for a smaller partial pass
-11. Re-check \`sourceloop status --json\` after each meaningful step
+10. Prefer AI-authored topic-specific questions when the operator can generate them, and pass them into \`sourceloop plan\` with \`--questions-file\`
+11. Once a 10-question batch is planned, prefer running the full batch unless the user explicitly asked for a smaller partial pass
+12. Re-check \`sourceloop status --json\` after each meaningful step
 
 ## NotebookLM entry rules
 
@@ -420,6 +425,7 @@ Use this skill when the current project is a SourceLoop workspace.
 - Existing NotebookLM URL: \`sourceloop notebook-bind ...\`, then \`sourceloop notebook-source declare ...\`
 - Local source files: \`sourceloop ingest ...\`, then \`sourceloop notebook-import --source-id ...\`
 - Remote URLs: \`sourceloop notebook-import --url ...\`
+- Prefer \`sourceloop plan ... --questions-file ./ai-questions.json --json\` when the operator has already generated a topic-specific question batch
 - Ready topic with no run: \`sourceloop plan ... --max-questions 10 --json\`
 - Planned or incomplete run: \`sourceloop run ... --json\`
 - Existing latest answer only: \`sourceloop import-latest ...\`

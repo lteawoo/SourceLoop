@@ -180,7 +180,7 @@ SourceLoop helps the AI tool:
 - prepare a managed research browser
 - create a topic and notebook
 - import the provided sources
-- plan a question batch
+- generate a topic-tailored question batch
 - archive answers and citations locally
 
 ### Continue Existing Research
@@ -239,6 +239,13 @@ sourceloop notebook-import \
   --json
 
 sourceloop plan topic-ai-agents-market --max-questions 10 --json
+
+# or persist AI-authored questions first, then import them into the plan
+sourceloop plan \
+  topic-ai-agents-market \
+  --questions-file ./ai-questions.json \
+  --json
+
 sourceloop run <run-id> --json
 ```
 
@@ -250,6 +257,7 @@ If you use SourceLoop through Codex, Claude Code, Gemini CLI, or another local A
 - ask for the topic first if the user did not provide one
 - if the user provided a topic but not sources, ask which sources to use before collecting or importing anything
 - mention that planning defaults to 10 questions unless the user wants another count
+- prefer AI-authored topic-specific questions when the operator can generate them, and fall back to the built-in template planner when it cannot
 - prefer `sourceloop chrome launch` over attaching to an unrelated Chrome profile
 - treat `sourceloop attach validate <target>` as NotebookLM home validation
 - use `--notebook-url` only when you specifically need to validate an existing notebook detail page
@@ -316,6 +324,7 @@ sourceloop attach validate attach-work-chrome
 sourceloop notebook-create --name "AI Agents" --topic-id topic-ai-agents-market --attach-target attach-work-chrome --json
 sourceloop notebook-import --notebook <managed-notebook-binding-id> --url "https://youtube.com/watch?v=..." --json
 sourceloop plan topic-ai-agents-market --max-questions 10 --json
+sourceloop plan topic-ai-agents-market --questions-file ./ai-questions.json --json
 sourceloop run <run-id> --json
 ```
 
