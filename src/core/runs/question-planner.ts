@@ -4,8 +4,10 @@ import { loadWorkspace } from "../workspace/load-workspace.js";
 import { getRunPaths } from "../vault/paths.js";
 import {
   questionBatchSchema,
+  plannedQuestionDraftSchema,
   questionKindSchema,
   runIndexSchema,
+  type PlannedQuestionDraft,
   type PlannedQuestion,
   type PlanningScope,
   type QARunIndex,
@@ -34,6 +36,7 @@ export type CreateQuestionPlanInput = {
   objective?: string;
   maxQuestions?: number;
   families?: string[];
+  questions?: PlannedQuestionDraft[];
   cwd?: string;
 };
 
@@ -73,7 +76,9 @@ export async function createQuestionPlan(
     `Research ${topicName} through a planned NotebookLM Q&A run.`;
   const intendedOutput = topicRecord?.topic.intendedOutput;
   const planningScope = normalizePlanningScope(input.maxQuestions, input.families);
-  const questions = buildPlannedQuestions(topicName, objective, intendedOutput, planningScope);
+  const questions = input.questions !== undefined
+    ? buildProvidedQuestions(input.questions, planningScope)
+    : buildPlannedQuestions(topicName, objective, intendedOutput, planningScope);
   const questionFamilies = [...new Set(questions.map((question) => question.kind))];
   const runId = buildRunId(topicName, timestamp);
 
@@ -180,6 +185,35 @@ async function preflightTopicPlanningContext(
 function buildRunId(topic: string, timestamp: Date): string {
   const time = timestamp.toISOString().replace(/[:.]/g, "-");
   return `run-${slugify(topic)}-${time}`;
+}
+
+function buildProvidedQuestions(
+  inputQuestions: PlannedQuestionDraft[],
+  planningScope?: PlanningScope
+): PlannedQuestion[] {
+  const normalizedQuestions = inputQuestions.map((question) => plannedQuestionDraftSchema.parse(question));
+  if (normalizedQuestions.length === 0) {
+    throw new Error("Question planning requires at least one AI-authored question draft.");
+  }
+  const filteredQuestions = normalizedQuestions.filter((question) =>
+    planningScope?.selectedFamilies?.length ? planningScope.selectedFamilies.includes(question.kind) : true
+  );
+  const scopedQuestions =
+    planningScope?.maxQuestions !== undefined
+      ? filteredQuestions.slice(0, planningScope.maxQuestions)
+      : filteredQuestions;
+
+  if (scopedQuestions.length === 0) {
+    throw new Error("Question planning produced no usable questions after applying the selected planning scope.");
+  }
+
+  return scopedQuestions.map((question, index) => ({
+    id: `q${String(index + 1).padStart(2, "0")}-${randomUUID().replace(/-/g, "").slice(0, 6)}`,
+    kind: question.kind,
+    prompt: question.prompt,
+    objective: question.objective,
+    order: index
+  }));
 }
 
 export function buildPlannedQuestions(

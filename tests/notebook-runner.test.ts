@@ -267,6 +267,86 @@ describe("NotebookLM QA run archive", () => {
     expect(questionsMarkdown).toContain("selected_families:");
   });
 
+  it("accepts AI-authored planned questions and applies the planning scope", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
+    await initializeWorkspace({ directory: workspaceRoot, force: false });
+
+    const binding = await bindNotebook({
+      cwd: workspaceRoot,
+      name: "AI Planned Notebook",
+      topic: "ai-planned-topic",
+      notebookUrl: "https://notebooklm.google.com/notebook/ai-planned-topic",
+      accessMode: "owner"
+    });
+
+    const plan = await createQuestionPlan({
+      cwd: workspaceRoot,
+      topic: "ai planned topic",
+      notebookBindingId: binding.binding.id,
+      maxQuestions: 2,
+      families: ["comparison", "execution"],
+      questions: [
+        {
+          kind: "core",
+          objective: "Clarify the thesis.",
+          prompt: "What is the central thesis behind ai planned topic?"
+        },
+        {
+          kind: "comparison",
+          objective: "Compare the most relevant playbooks.",
+          prompt: "Which competing playbooks matter most for ai planned topic, and where does each one break?"
+        },
+        {
+          kind: "execution",
+          objective: "Turn the research into an operating checklist.",
+          prompt: "What execution checklist should someone follow to apply ai planned topic in a real team?"
+        },
+        {
+          kind: "evidence_gap",
+          objective: "Expose the weakest claims.",
+          prompt: "Which claims around ai planned topic still need direct verification?"
+        }
+      ]
+    });
+
+    expect(plan.batch.questions).toHaveLength(2);
+    expect(plan.batch.questionFamilies).toEqual(["comparison", "execution"]);
+    expect(plan.batch.questions[0]).toMatchObject({
+      kind: "comparison",
+      objective: "Compare the most relevant playbooks.",
+      prompt: "Which competing playbooks matter most for ai planned topic, and where does each one break?",
+      order: 0
+    });
+    expect(plan.batch.questions[1]).toMatchObject({
+      kind: "execution",
+      objective: "Turn the research into an operating checklist.",
+      prompt: "What execution checklist should someone follow to apply ai planned topic in a real team?",
+      order: 1
+    });
+  });
+
+  it("rejects empty AI-authored question arrays instead of falling back to template planning", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
+    await initializeWorkspace({ directory: workspaceRoot, force: false });
+
+    const binding = await bindNotebook({
+      cwd: workspaceRoot,
+      name: "Empty AI Planned Notebook",
+      topic: "empty-ai-planned-topic",
+      notebookUrl: "https://notebooklm.google.com/notebook/empty-ai-planned-topic",
+      accessMode: "owner"
+    });
+
+    await expect(
+      createQuestionPlan({
+        cwd: workspaceRoot,
+        topic: "empty ai planned topic",
+        notebookBindingId: binding.binding.id,
+        questions: []
+      })
+    ).rejects.toThrow("Question planning requires at least one AI-authored question draft.");
+  });
+
   it("fails topic-first planning when the topic corpus and notebook binding are misaligned", async () => {
     const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
     await initializeWorkspace({ directory: workspaceRoot, force: false });
