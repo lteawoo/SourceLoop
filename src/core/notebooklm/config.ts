@@ -25,6 +25,13 @@ export const NOTEBOOKLM_RESPONSE_SELECTORS = [
 
 export const NOTEBOOKLM_ANSWER_BODY_SELECTORS = [
   ".markdown",
+  // NotebookLM often renders rich answers as div.paragraph blocks instead of semantic p/li nodes.
+  ".message-text-content div.paragraph.is-rich-chat-ui",
+  ".message-text-content div.paragraph",
+  ".message-content div.paragraph.is-rich-chat-ui",
+  ".message-content div.paragraph",
+  "div.paragraph.is-rich-chat-ui",
+  "div.paragraph",
   ".message-text-content p",
   ".message-text-content li",
   ".message-content p",
