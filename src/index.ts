@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { Command } from "commander";
+import { createRequire } from "node:module";
 import { attachCommand } from "./commands/attach.js";
 import { authCommand } from "./commands/auth.js";
 import { chromeCommand } from "./commands/chrome.js";
@@ -18,12 +19,14 @@ import { runCommand } from "./commands/run.js";
 import { statusCommand } from "./commands/status.js";
 import { topicCommand } from "./commands/topic.js";
 
+const require = createRequire(import.meta.url);
+const { version } = require("../package.json") as { version: string };
 const program = new Command();
 
 program
   .name("sourceloop")
   .description("NotebookLM-centered research orchestration pipeline")
-  .version("0.1.0");
+  .version(version);
 
 program.addCommand(initCommand);
 program.addCommand(statusCommand);
