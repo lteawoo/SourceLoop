@@ -158,6 +158,13 @@ describe("Chrome attach targets", () => {
     const browserAgentModule = await import("../src/core/notebooklm/browser-agent.js");
     browserAgentModule.defaultNotebookBrowserSessionFactory.createSession = async () => ({
       async preflight() {},
+      async capturePlanningSnapshot() {
+        return {
+          notebookTitle: "Validated Notebook",
+          sourceCount: 1,
+          summary: "Validated notebook summary."
+        };
+      },
       async askQuestion() {
         throw new Error("unused");
       },
@@ -473,6 +480,9 @@ function createFailingSessionFactory(
         async preflight() {
           throw new ChromeAttachValidationError(code, message);
         },
+        async capturePlanningSnapshot() {
+          throw new Error("capturePlanningSnapshot should not run when preflight fails");
+        },
         async askQuestion() {
           throw new Error("askQuestion should not run when preflight fails");
         },
@@ -498,6 +508,13 @@ function createSuccessSessionFactory(options: {
     async createSession(): Promise<NotebookBrowserSession> {
       return {
         async preflight() {},
+        async capturePlanningSnapshot() {
+          return {
+            notebookTitle: "Attached Notebook",
+            sourceCount: 1,
+            summary: "Attached notebook summary."
+          };
+        },
         async askQuestion(question: PlannedQuestion) {
           if (options.failQuestionId && question.id === options.failQuestionId) {
             throw new Error(`Attached session failed for ${question.id}`);

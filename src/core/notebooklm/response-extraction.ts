@@ -81,6 +81,20 @@ const LIKELY_FRAGMENT_WORDS = new Set([
   "ven't"
 ]);
 
+const NOTEBOOKLM_PLACEHOLDER_ANSWER_TEXTS = new Set([
+  "getting the context...",
+  "getting the gist...",
+  "scanning the text...",
+  "expanding the definition...",
+  "evaluating comparative capabilities...",
+  "documenting the execution..."
+]);
+
+const NOTEBOOKLM_PLACEHOLDER_ANSWER_PATTERNS = [
+  /^(getting|scanning|evaluating|expanding|documenting)\b.*\.\.\.$/i,
+  /^(getting|scanning|evaluating|expanding|documenting)\b.*…$/i
+] as const;
+
 export function normalizeNotebookLMAnswerText(rawText: string): string {
   const normalizedInput = normalizeWhitespace(rawText);
   if (!normalizedInput) {
@@ -114,7 +128,8 @@ export function normalizeNotebookLMAnswerText(rawText: string): string {
     cleanedLines.push(line);
   }
 
-  return cleanedLines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  const normalizedOutput = cleanedLines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  return isLikelyNotebookLMPlaceholderAnswerText(normalizedOutput) ? "" : normalizedOutput;
 }
 
 export function extractNormalizedAnswerFromSnapshot(snapshot: NotebookLMResponseSnapshot): string {
@@ -133,7 +148,20 @@ export function extractNormalizedAnswerFromSnapshot(snapshot: NotebookLMResponse
     return fallback;
   }
 
-  return snapshot.responseText.trim();
+  return isLikelyNotebookLMPlaceholderAnswerText(snapshot.responseText) ? "" : snapshot.responseText.trim();
+}
+
+export function isLikelyNotebookLMPlaceholderAnswerText(rawText: string): boolean {
+  const normalized = normalizeLine(rawText);
+  if (!normalized) {
+    return false;
+  }
+
+  if (NOTEBOOKLM_PLACEHOLDER_ANSWER_TEXTS.has(normalized.toLowerCase())) {
+    return true;
+  }
+
+  return NOTEBOOKLM_PLACEHOLDER_ANSWER_PATTERNS.some((pattern) => pattern.test(normalized));
 }
 
 export function extractCitationReferencesFromSnapshot(

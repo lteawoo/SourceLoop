@@ -111,7 +111,10 @@ Use this skill when the current project is a SourceLoop workspace.
 8. Require usable evidence before planning
 9. Execution defaults:
    - planning defaults to 10 questions unless the user asked for a different count
-   - prefer AI-authored topic-specific questions when the operator can generate them, and pass them into \`sourceloop plan\` with \`--questions-file\`
+   - after evidence import, wait for the NotebookLM notebook-level summary body before planning
+   - prefer \`sourceloop plan-context ... --json\` to export notebook-summary planning context for the active agent session
+   - have the active agent author questions from that JSON, then submit them with \`sourceloop plan ... --questions-file - --json\`
+   - use \`--questions-file\` only as an explicit manual override
    - once a 10-question batch is planned, prefer running the full batch unless the user explicitly asked for a smaller partial pass
 10. Re-check \`status --json\` after each meaningful step
 11. If a NotebookLM step may take a while, say so briefly before waiting
@@ -172,8 +175,8 @@ Use this skill when the current project is a SourceLoop workspace.
 - Local source files: \`sourceloop ingest ...\` then \`sourceloop notebook-import --source-id ...\` (also for the first source on an empty managed notebook)
 - Remote URLs: \`sourceloop notebook-import --url ...\` (also for the first source on an empty managed notebook)
 - For SourceLoop-managed notebooks, treat the requested notebook title as a label only and read the returned binding id from JSON or \`status --json\`
-- Prefer \`sourceloop plan ... --questions-file ./ai-questions.json --json\` when the operator has already generated a topic-specific question batch
-- Ready topic with no run: \`sourceloop plan ... --max-questions 10 --json\`
+- Ready topic with notebook summary visible: \`sourceloop plan-context ... --json\`
+- Have the active agent author questions from the emitted planning context, then run \`sourceloop plan ... --questions-file - --json\`
 - Planned or incomplete run: \`sourceloop run ... --json\`
 - Existing latest answer only: \`sourceloop import-latest ...\`
 - Treat \`--limit\` as the execution scope for one run command. Do not stop halfway through that requested limit just to ask again.
@@ -214,8 +217,10 @@ function buildCodexPlaybookReference(): string {
 8. \`notebook-create\` or \`notebook-bind\`
 9. \`ingest\`, \`notebook-import\`, or \`notebook-source declare\`
 10. \`status --json\` and \`doctor --json\` again
-11. \`plan --max-questions 10 --json\`
-12. \`run --json\`
+11. \`plan-context --json\`
+12. active agent authors questions from the emitted JSON
+13. \`plan --questions-file - --json\`
+14. \`run --json\`
 
 ## Start conditions
 
@@ -324,9 +329,10 @@ Use this skill when the current project is a SourceLoop workspace.
 7. Prepare notebook before evidence import or declaration
 8. Require usable evidence before planning
 9. Planning defaults to 10 questions unless the user asked for another count
-10. Prefer AI-authored topic-specific questions when the operator can generate them, and pass them into \`sourceloop plan\` with \`--questions-file\`
-11. Once a 10-question batch is planned, prefer running the full batch unless the user explicitly asked for a smaller partial pass
-12. Re-check \`sourceloop status --json\` after each meaningful step
+10. After evidence import, wait for the NotebookLM notebook-level summary body before planning
+11. Prefer \`sourceloop plan-context ... --json\`, have the active agent author questions from the emitted JSON, then submit them with \`sourceloop plan ... --questions-file - --json\`
+12. Once a 10-question batch is planned, prefer running the full batch unless the user explicitly asked for a smaller partial pass
+13. Re-check \`sourceloop status --json\` after each meaningful step
 
 ## NotebookLM entry rules
 
@@ -351,8 +357,8 @@ Use this skill when the current project is a SourceLoop workspace.
 - Existing NotebookLM URL: \`sourceloop notebook-bind ...\`, then \`sourceloop notebook-source declare ...\`
 - Local source files: \`sourceloop ingest ...\`, then \`sourceloop notebook-import --source-id ...\`
 - Remote URLs: \`sourceloop notebook-import --url ...\`
-- Prefer \`sourceloop plan ... --questions-file ./ai-questions.json --json\` when the operator has already generated a topic-specific question batch
-- Ready topic with no run: \`sourceloop plan ... --max-questions 10 --json\`
+- Ready topic with notebook summary visible: \`sourceloop plan-context ... --json\`
+- Have the active agent author questions from the emitted planning context, then run \`sourceloop plan ... --questions-file - --json\`
 - Planned or incomplete run: \`sourceloop run ... --json\`
 - Existing latest answer only: \`sourceloop import-latest ...\`
 - After \`run\` or \`import-latest\` finishes generating the requested answer output, the SourceLoop-managed Chrome should be closed.
@@ -398,9 +404,10 @@ Use this skill when the current project is a SourceLoop workspace.
 7. Prepare notebook before evidence import or declaration
 8. Require usable evidence before planning
 9. Planning defaults to 10 questions unless the user asked for another count
-10. Prefer AI-authored topic-specific questions when the operator can generate them, and pass them into \`sourceloop plan\` with \`--questions-file\`
-11. Once a 10-question batch is planned, prefer running the full batch unless the user explicitly asked for a smaller partial pass
-12. Re-check \`sourceloop status --json\` after each meaningful step
+10. After evidence import, wait for the NotebookLM notebook-level summary body before planning
+11. Prefer \`sourceloop plan-context ... --json\`, have the active agent author questions from the emitted JSON, then submit them with \`sourceloop plan ... --questions-file - --json\`
+12. Once a 10-question batch is planned, prefer running the full batch unless the user explicitly asked for a smaller partial pass
+13. Re-check \`sourceloop status --json\` after each meaningful step
 
 ## NotebookLM entry rules
 
@@ -425,8 +432,8 @@ Use this skill when the current project is a SourceLoop workspace.
 - Existing NotebookLM URL: \`sourceloop notebook-bind ...\`, then \`sourceloop notebook-source declare ...\`
 - Local source files: \`sourceloop ingest ...\`, then \`sourceloop notebook-import --source-id ...\`
 - Remote URLs: \`sourceloop notebook-import --url ...\`
-- Prefer \`sourceloop plan ... --questions-file ./ai-questions.json --json\` when the operator has already generated a topic-specific question batch
-- Ready topic with no run: \`sourceloop plan ... --max-questions 10 --json\`
+- Ready topic with notebook summary visible: \`sourceloop plan-context ... --json\`
+- Have the active agent author questions from the emitted planning context, then run \`sourceloop plan ... --questions-file - --json\`
 - Planned or incomplete run: \`sourceloop run ... --json\`
 - Existing latest answer only: \`sourceloop import-latest ...\`
 - After \`run\` or \`import-latest\` finishes generating the requested answer output, the SourceLoop-managed Chrome should be closed.
@@ -464,8 +471,11 @@ function buildSharedPlaybookReference(): string {
 8. \`notebook-create\` or \`notebook-bind\`
 9. \`ingest\`, \`notebook-import\`, or \`notebook-source declare\`
 10. \`status --json\` and \`doctor --json\` again
-11. \`plan --max-questions 10 --json\`
-12. \`run --json\`
+11. wait for the NotebookLM notebook-level summary body
+12. \`plan-context --json\`
+13. active agent authors questions from the emitted JSON
+14. \`plan --questions-file - --json\`
+15. \`run --json\`
 
 ## Decision rules
 
@@ -481,6 +491,7 @@ function buildSharedPlaybookReference(): string {
 - If the user did not provide sources, do not search for or choose source materials unless the user explicitly asked you to find sources.
 - If the user provided topic plus sources, create a managed notebook and import those sources.
 - If the user provided a NotebookLM URL, bind the existing notebook and continue from its source state.
+- If evidence was added or declared but the notebook summary body is not visible yet, wait for NotebookLM to finish summarizing before planning.
 - If a run already exists, resume it before creating a new pass.
 - If the user planned 10 questions and did not ask for a partial pass, run the full remaining batch instead of adding a default \`--limit\`.
 - After \`run\` or \`import-latest\` completes and the requested answer output has been generated, the SourceLoop-managed Chrome should be closed automatically unless the user explicitly asked to keep it open.

@@ -1,33 +1,49 @@
-import { mkdir, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import { loadWorkspace } from "../workspace/load-workspace.js";
-import { getRunPaths } from "../vault/paths.js";
+import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import path from "node:path";
 import {
   questionBatchSchema,
   plannedQuestionDraftSchema,
   questionKindSchema,
+  questionPlanningContextPreviewSchema,
+  questionPlanningContextSchema,
   runIndexSchema,
   type PlannedQuestionDraft,
   type PlannedQuestion,
+  type PlanningMode,
   type PlanningScope,
   type QARunIndex,
-  type QuestionBatch
+  type QuestionBatch,
+  type QuestionPlanningContext,
+  type QuestionPlanningContextPreview
 } from "../../schemas/run.js";
-import { toFrontmatterMarkdown } from "../ingest/frontmatter.js";
 import { writeJsonFile } from "../../lib/write-json.js";
 import { slugify } from "../../lib/slugify.js";
-import { loadNotebookBinding } from "./load-artifacts.js";
-import { listNotebookSourceManifests } from "../notebooks/manage-notebook-source-manifests.js";
-import { listManagedNotebookImports } from "../notebooks/manage-managed-notebooks.js";
-import { loadTopic, refreshTopicArtifacts } from "../topics/manage-topics.js";
-import { loadChromeAttachTarget } from "../attach/manage-targets.js";
-import { getVaultPaths } from "../vault/paths.js";
-import path from "node:path";
-import { readFile, readdir } from "node:fs/promises";
-import { notebookBindingSchema } from "../../schemas/notebook.js";
 import { makeAliases, makeTags, normalizeObsidianText, summarizeQuestionTitle } from "../../lib/obsidian.js";
-import { getExchangeNote, getNotebookNote, getQuestionsNote, getRunIndexNote, getTopicIndexNote, toWikiLink } from "../vault/notes.js";
+import { loadChromeAttachTarget } from "../attach/manage-targets.js";
+import {
+  defaultNotebookBrowserSessionFactory,
+  type NotebookBrowserSessionFactory,
+  type NotebookPlanningSnapshot
+} from "../notebooklm/browser-agent.js";
+import { listManagedNotebookImports } from "../notebooks/manage-managed-notebooks.js";
+import { listNotebookSourceManifests } from "../notebooks/manage-notebook-source-manifests.js";
+import {
+  getExchangeNote,
+  getNotebookNote,
+  getQuestionsNote,
+  getRunIndexNote,
+  getTopicIndexNote,
+  toWikiLink
+} from "../vault/notes.js";
+import { getRunPaths, getVaultPaths } from "../vault/paths.js";
+import { loadWorkspace } from "../workspace/load-workspace.js";
+import { toFrontmatterMarkdown } from "../ingest/frontmatter.js";
+import { loadTopic, refreshTopicArtifacts } from "../topics/manage-topics.js";
 import { buildRunIndexMarkdown } from "./render-run-note.js";
+import { QUESTION_PLANNER_COMMAND_ENV, type QuestionPlanner, generateQuestionsFromPlanningContext } from "./ai-question-planner.js";
+import { loadNotebookBinding } from "./load-artifacts.js";
+import { notebookBindingSchema } from "../../schemas/notebook.js";
 
 export type CreateQuestionPlanInput = {
   topic?: string;
@@ -37,15 +53,52 @@ export type CreateQuestionPlanInput = {
   maxQuestions?: number;
   families?: string[];
   questions?: PlannedQuestionDraft[];
+  planningSnapshot?: NotebookPlanningSnapshot;
+  questionPlanner?: QuestionPlanner;
+  sessionFactory?: NotebookBrowserSessionFactory;
+  plannerEnv?: NodeJS.ProcessEnv;
+  plannerShell?: string;
+  requireAiPlanner?: boolean;
   cwd?: string;
 };
 
 export type CreateQuestionPlanResult = {
   run: QARunIndex;
   batch: QuestionBatch;
+  planningContext?: QuestionPlanningContext;
   runDir: string;
   runMarkdownPath: string;
   questionsMarkdownPath: string;
+  planningContextJsonPath?: string;
+};
+
+export type CreateQuestionPlanningContextInput = {
+  topic?: string;
+  topicId?: string;
+  notebookBindingId?: string;
+  objective?: string;
+  maxQuestions?: number;
+  families?: string[];
+  planningSnapshot?: NotebookPlanningSnapshot;
+  sessionFactory?: NotebookBrowserSessionFactory;
+  cwd?: string;
+};
+
+export type QuestionPlanningContextArtifact = {
+  topic: string;
+  topicId?: string;
+  notebookBindingId: string;
+  objective: string;
+  intendedOutput?: string;
+  planningScope?: PlanningScope;
+  planningMode: PlanningMode;
+  planningContext: QuestionPlanningContextPreview;
+  planningContextPreview: QuestionPlanningContextPreview;
+  suggestedPlanArguments: {
+    topicOrId: string;
+    questionsFile: "-";
+    maxQuestions: number;
+  };
 };
 
 export const DEFAULT_MAX_QUESTIONS = 10;
@@ -53,104 +106,329 @@ export const DEFAULT_MAX_QUESTIONS = 10;
 export async function createQuestionPlan(
   input: CreateQuestionPlanInput
 ): Promise<CreateQuestionPlanResult> {
-  const workspace = await loadWorkspace(input.cwd);
-  const topicRecord = input.topicId ? await loadTopic(input.topicId, input.cwd) : undefined;
-  const notebookBindingId =
-    input.notebookBindingId ??
-    (input.topicId ? await resolveNotebookBindingIdForTopic(workspace.rootDir, input.topicId) : undefined);
+  const core = await resolveQuestionPlanningCore(input);
+  const planningScope = core.planningScope;
+  let planningMode: PlanningMode | undefined;
+  let planningContext: QuestionPlanningContext | undefined;
+  let questions: PlannedQuestion[];
 
-  if (!notebookBindingId) {
-    throw new Error("Question planning requires a notebook binding. For the preferred flow, create a topic-bound notebook and plan by topic id.");
-  }
+  const shouldFallbackToLegacyPlanner =
+    input.questions === undefined &&
+    !input.requireAiPlanner &&
+    !hasAiPlannerAvailable(input) &&
+    !input.planningSnapshot;
 
-  const { binding } = await loadNotebookBinding(notebookBindingId, input.cwd);
-  if (topicRecord) {
-    await preflightTopicPlanningContext(topicRecord.corpus, binding, input.cwd);
+  if (input.questions !== undefined) {
+    planningMode = "questions_file_override";
+    planningContext = await buildPlanningContext(
+      {
+        runId: core.runId,
+        binding: core.binding,
+        topicName: core.topicName,
+        ...(core.topicRecord?.topic.id ? { topicId: core.topicRecord.topic.id } : {}),
+        objective: core.objective,
+        ...(core.intendedOutput ? { intendedOutput: core.intendedOutput } : {}),
+        planningMode,
+        ...(input.planningSnapshot ? { planningSnapshot: input.planningSnapshot } : {}),
+        ...(input.sessionFactory ? { sessionFactory: input.sessionFactory } : {}),
+        ...(input.cwd ? { cwd: input.cwd } : {})
+      },
+      core.createdAt
+    );
+    if (core.topicRecord) {
+      await preflightTopicPlanningContext(core.topicRecord.corpus, core.binding, input.cwd, {
+        ...(planningContext.sourceCount !== undefined ? { planningSourceCount: planningContext.sourceCount } : {}),
+        ...(planningContext.summary ? { planningSummary: planningContext.summary } : {})
+      });
+    }
+    questions = buildProvidedQuestions(input.questions, core.planningScope);
+  } else if (shouldFallbackToLegacyPlanner) {
+    if (core.topicRecord) {
+      await preflightTopicPlanningContext(core.topicRecord.corpus, core.binding, input.cwd);
+    }
+    questions = buildLegacyPlannedQuestions(core.topicName, core.objective, core.intendedOutput, core.planningScope);
+  } else {
+    planningMode = "ai_default";
+    planningContext = await buildPlanningContext(
+      {
+        runId: core.runId,
+        binding: core.binding,
+        topicName: core.topicName,
+        ...(core.topicRecord?.topic.id ? { topicId: core.topicRecord.topic.id } : {}),
+        objective: core.objective,
+        ...(core.intendedOutput ? { intendedOutput: core.intendedOutput } : {}),
+        planningMode,
+        ...(input.planningSnapshot ? { planningSnapshot: input.planningSnapshot } : {}),
+        ...(input.sessionFactory ? { sessionFactory: input.sessionFactory } : {}),
+        ...(input.cwd ? { cwd: input.cwd } : {})
+      },
+      core.createdAt
+    );
+    if (core.topicRecord) {
+      await preflightTopicPlanningContext(core.topicRecord.corpus, core.binding, input.cwd, {
+        ...(planningContext.sourceCount !== undefined ? { planningSourceCount: planningContext.sourceCount } : {}),
+        ...(planningContext.summary ? { planningSummary: planningContext.summary } : {})
+      });
+    }
+    questions = buildProvidedQuestions(
+      await generateQuestionsFromPlanningContext(
+        {
+          context: planningContext,
+          ...(planningScope?.maxQuestions !== undefined ? { maxQuestions: planningScope.maxQuestions } : {})
+        },
+        {
+          ...(input.questionPlanner ? { planner: input.questionPlanner } : {}),
+          ...(input.plannerEnv ? { env: input.plannerEnv } : {}),
+          ...(input.plannerShell ? { shell: input.plannerShell } : {})
+        }
+      ),
+      planningScope
+    );
   }
-  const timestamp = new Date();
-  const createdAt = timestamp.toISOString();
-  const topicName = normalizeObsidianText(topicRecord?.topic.name ?? input.topic ?? binding.topic);
-  const objective =
-    input.objective ??
-    topicRecord?.topic.goal ??
-    `Research ${topicName} through a planned NotebookLM Q&A run.`;
-  const intendedOutput = topicRecord?.topic.intendedOutput;
-  const planningScope = normalizePlanningScope(input.maxQuestions, input.families);
-  const questions = input.questions !== undefined
-    ? buildProvidedQuestions(input.questions, planningScope)
-    : buildPlannedQuestions(topicName, objective, intendedOutput, planningScope);
-  const questionFamilies = [...new Set(questions.map((question) => question.kind))];
-  const runId = buildRunId(topicName, timestamp);
+  const questionFamilies = [...new Set(questions.flatMap((question) => (question.kind ? [question.kind] : [])))];
 
   const batch = questionBatchSchema.parse({
-    id: `batch-${runId}`,
+    id: `batch-${core.runId}`,
     type: "question_batch",
-    topic: topicName,
-    topicId: topicRecord?.topic.id,
-    notebookBindingId,
-    objective,
-    intendedOutput,
+    topic: core.topicName,
+    topicId: core.topicRecord?.topic.id,
+    notebookBindingId: core.notebookBindingId,
+    objective: core.objective,
+    intendedOutput: core.intendedOutput,
+    ...(planningMode ? { planningMode } : {}),
     questionFamilies,
-    ...(planningScope ? { planningScope } : {}),
-    createdAt,
+    ...(core.planningScope ? { planningScope: core.planningScope } : {}),
+    createdAt: core.createdAt,
     questions
   });
 
   const run = runIndexSchema.parse({
-    id: runId,
+    id: core.runId,
     type: "qa_run",
-    topic: topicName,
-    topicId: topicRecord?.topic.id,
-    notebookBindingId,
+    topic: core.topicName,
+    topicId: core.topicRecord?.topic.id,
+    notebookBindingId: core.notebookBindingId,
     questionBatchId: batch.id,
+    ...(planningMode ? { planningMode } : {}),
     status: "planned",
-    ...(planningScope ? { planningScope } : {}),
-    createdAt,
-    updatedAt: createdAt,
+    ...(core.planningScope ? { planningScope: core.planningScope } : {}),
+    createdAt: core.createdAt,
+    updatedAt: core.createdAt,
     completedQuestionIds: [],
     outputArtifacts: []
   });
 
-  const runPaths = getRunPaths(workspace, run.id);
-  const runNote = getRunIndexNote(workspace, run);
-  const questionsNote = getQuestionsNote(workspace, batch);
-  const attachTarget = binding.attachTargetId
-    ? (await loadChromeAttachTarget(binding.attachTargetId, input.cwd).catch(() => undefined))?.target
+  const runPaths = getRunPaths(core.workspace, run.id);
+  const runNote = getRunIndexNote(core.workspace, run);
+  const questionsNote = getQuestionsNote(core.workspace, batch);
+  const attachTarget = core.binding.attachTargetId
+    ? (await loadChromeAttachTarget(core.binding.attachTargetId, input.cwd).catch(() => undefined))?.target
     : undefined;
   await mkdir(runPaths.exchangesDir, { recursive: true });
   await mkdir(runPaths.outputsDir, { recursive: true });
 
   await writeJsonFile(runPaths.indexJsonPath, run);
   await writeJsonFile(runPaths.questionsJsonPath, batch);
+  if (planningContext) {
+    await writeJsonFile(runPaths.planningContextJsonPath, planningContext);
+  }
   await writeFile(
     runNote.absolutePath,
     buildRunIndexMarkdown({
-      workspace,
+      workspace: core.workspace,
       run,
       batch,
-      binding,
+      binding: core.binding,
       ...(attachTarget ? { attachTarget } : {})
     }),
     "utf8"
   );
-  await writeFile(questionsNote.absolutePath, buildQuestionsMarkdown(workspace, batch, binding), "utf8");
-  if (topicRecord?.topic.id) {
-    await refreshTopicArtifacts(topicRecord.topic.id, input.cwd);
+  await writeFile(questionsNote.absolutePath, buildQuestionsMarkdown(core.workspace, batch, core.binding), "utf8");
+  if (core.topicRecord?.topic.id) {
+    await refreshTopicArtifacts(core.topicRecord.topic.id, input.cwd);
   }
 
   return {
     run,
     batch,
+    ...(planningContext ? { planningContext } : {}),
     runDir: runPaths.runDir,
     runMarkdownPath: runNote.absolutePath,
-    questionsMarkdownPath: questionsNote.absolutePath
+    questionsMarkdownPath: questionsNote.absolutePath,
+    ...(planningContext ? { planningContextJsonPath: runPaths.planningContextJsonPath } : {})
   };
+}
+
+export async function createQuestionPlanningContext(
+  input: CreateQuestionPlanningContextInput
+): Promise<QuestionPlanningContextArtifact> {
+  const core = await resolveQuestionPlanningCore(input);
+  const planningMode: PlanningMode = "ai_default";
+  const planningContextPreview = await buildQuestionPlanningContextPreview(
+    {
+      binding: core.binding,
+      topicName: core.topicName,
+      ...(core.topicRecord?.topic.id ? { topicId: core.topicRecord.topic.id } : {}),
+      objective: core.objective,
+      ...(core.intendedOutput ? { intendedOutput: core.intendedOutput } : {}),
+      planningMode,
+      ...(core.planningScope ? { planningScope: core.planningScope } : {}),
+      ...(input.planningSnapshot ? { planningSnapshot: input.planningSnapshot } : {}),
+      ...(input.sessionFactory ? { sessionFactory: input.sessionFactory } : {}),
+      ...(input.cwd ? { cwd: input.cwd } : {})
+    },
+    core.createdAt
+  );
+
+  if (core.topicRecord) {
+    await preflightTopicPlanningContext(core.topicRecord.corpus, core.binding, input.cwd, {
+      ...(planningContextPreview.sourceCount !== undefined ? { planningSourceCount: planningContextPreview.sourceCount } : {}),
+      ...(planningContextPreview.summary ? { planningSummary: planningContextPreview.summary } : {})
+    });
+  }
+
+  return {
+    topic: core.topicName,
+    ...(core.topicRecord?.topic.id ? { topicId: core.topicRecord.topic.id } : {}),
+    notebookBindingId: core.notebookBindingId,
+    objective: core.objective,
+    ...(core.intendedOutput ? { intendedOutput: core.intendedOutput } : {}),
+    ...(core.planningScope ? { planningScope: core.planningScope } : {}),
+    planningMode,
+    planningContext: planningContextPreview,
+    planningContextPreview,
+    suggestedPlanArguments: {
+      topicOrId: core.topicRecord?.topic.id ?? input.topic ?? core.topicName,
+      questionsFile: "-",
+      maxQuestions: core.planningScope?.maxQuestions ?? DEFAULT_MAX_QUESTIONS
+    }
+  };
+}
+
+function hasAiPlannerAvailable(input: CreateQuestionPlanInput): boolean {
+  if (input.questionPlanner) {
+    return true;
+  }
+
+  const env = input.plannerEnv ?? process.env;
+  return Boolean(env[QUESTION_PLANNER_COMMAND_ENV]?.trim());
+}
+
+async function buildPlanningContext(
+  input: {
+    runId: string;
+    binding: Awaited<ReturnType<typeof loadNotebookBinding>>["binding"];
+    topicName: string;
+    topicId?: string;
+    objective: string;
+    intendedOutput?: string;
+    planningMode: PlanningMode;
+    planningSnapshot?: NotebookPlanningSnapshot;
+    sessionFactory?: NotebookBrowserSessionFactory;
+    cwd?: string;
+  },
+  createdAt: string
+): Promise<QuestionPlanningContext> {
+  const snapshot =
+    input.planningSnapshot ??
+    (input.planningMode === "questions_file_override"
+      ? await captureNotebookPlanningSnapshot(input.binding, input.sessionFactory, input.cwd).catch(() => undefined)
+      : await captureNotebookPlanningSnapshot(input.binding, input.sessionFactory, input.cwd));
+
+  if (input.planningMode !== "questions_file_override" && !snapshot) {
+    throw new Error(
+      "NotebookLM planning context is not ready yet. Wait for the notebook summary to appear, then rerun planning."
+    );
+  }
+
+  return questionPlanningContextSchema.parse({
+    id: `planning-context-${input.runId}`,
+    type: "question_planning_context",
+    runId: input.runId,
+    topic: input.topicName,
+    topicId: input.topicId,
+    notebookBindingId: input.binding.id,
+    notebookUrl: input.binding.notebookUrl,
+    notebookTitle: snapshot?.notebookTitle,
+    sourceCount: snapshot?.sourceCount,
+    summary: snapshot?.summary,
+    objective: input.objective,
+    intendedOutput: input.intendedOutput,
+    planningMode: input.planningMode,
+    createdAt
+  });
+}
+
+async function buildQuestionPlanningContextPreview(
+  input: {
+    binding: Awaited<ReturnType<typeof loadNotebookBinding>>["binding"];
+    topicName: string;
+    topicId?: string;
+    objective: string;
+    intendedOutput?: string;
+    planningMode: PlanningMode;
+    planningScope?: PlanningScope;
+    planningSnapshot?: NotebookPlanningSnapshot;
+    sessionFactory?: NotebookBrowserSessionFactory;
+    cwd?: string;
+  },
+  createdAt: string
+): Promise<QuestionPlanningContextPreview> {
+  const snapshot =
+    input.planningSnapshot ??
+    (await captureNotebookPlanningSnapshot(input.binding, input.sessionFactory, input.cwd));
+
+  return questionPlanningContextPreviewSchema.parse({
+    type: "question_planning_context_preview",
+    topic: input.topicName,
+    ...(input.topicId ? { topicId: input.topicId } : {}),
+    notebookBindingId: input.binding.id,
+    notebookUrl: input.binding.notebookUrl,
+    notebookTitle: snapshot.notebookTitle,
+    sourceCount: snapshot.sourceCount,
+    summary: snapshot.summary,
+    objective: input.objective,
+    ...(input.intendedOutput ? { intendedOutput: input.intendedOutput } : {}),
+    planningMode: input.planningMode,
+    ...(input.planningScope ? { planningScope: input.planningScope } : {}),
+    createdAt
+  });
+}
+
+async function captureNotebookPlanningSnapshot(
+  binding: Awaited<ReturnType<typeof loadNotebookBinding>>["binding"],
+  sessionFactory: NotebookBrowserSessionFactory | undefined,
+  cwd?: string
+): Promise<NotebookPlanningSnapshot> {
+  if (!binding.attachTargetId) {
+    throw new Error(
+      `Notebook ${binding.id} does not have an attached Chrome target. Configure an attach target or provide --questions-file.`
+    );
+  }
+
+  const { target } = await loadChromeAttachTarget(binding.attachTargetId, cwd);
+  const resolvedSessionFactory = sessionFactory ?? defaultNotebookBrowserSessionFactory;
+  const session = await resolvedSessionFactory.createSession({
+    target,
+    reuseExistingNotebookPage: true
+  });
+
+  try {
+    await session.preflight(binding.notebookUrl);
+    return await session.capturePlanningSnapshot(binding.notebookUrl);
+  } finally {
+    await session.close();
+  }
 }
 
 async function preflightTopicPlanningContext(
   corpus: Awaited<ReturnType<typeof loadTopic>>["corpus"],
   binding: Awaited<ReturnType<typeof loadNotebookBinding>>["binding"],
-  cwd?: string
+  cwd?: string,
+  options?: {
+    planningSourceCount?: number;
+    planningSummary?: string;
+  }
 ) {
   if (binding.topicId && binding.topicId !== corpus.topicId) {
     throw new Error(
@@ -175,6 +453,12 @@ async function preflightTopicPlanningContext(
       managedImport.status === "imported"
   ).length;
   const evidenceCount = corpus.sourceIds.length + matchingNotebookEvidenceCount + matchingManagedEvidenceCount;
+  const hasNotebookSummaryEvidence =
+    (options?.planningSourceCount ?? 0) > 0 && Boolean(options?.planningSummary?.trim());
+  if (evidenceCount === 0 && hasNotebookSummaryEvidence) {
+    return;
+  }
+
   if (evidenceCount === 0) {
     throw new Error(
       `Topic ${corpus.topicId} has no declared evidence aligned to notebook binding ${binding.id}. Ingest topic-backed material, declare a notebook-source manifest, or import managed sources for this notebook before planning NotebookLM questions.`
@@ -195,9 +479,18 @@ function buildProvidedQuestions(
   if (normalizedQuestions.length === 0) {
     throw new Error("Question planning requires at least one AI-authored question draft.");
   }
-  const filteredQuestions = normalizedQuestions.filter((question) =>
-    planningScope?.selectedFamilies?.length ? planningScope.selectedFamilies.includes(question.kind) : true
-  );
+
+  const filteredQuestions = normalizedQuestions.filter((question) => {
+    if (!planningScope?.selectedFamilies?.length) {
+      return true;
+    }
+
+    if (!question.kind) {
+      return false;
+    }
+
+    return planningScope.selectedFamilies.includes(question.kind);
+  });
   const scopedQuestions =
     planningScope?.maxQuestions !== undefined
       ? filteredQuestions.slice(0, planningScope.maxQuestions)
@@ -209,14 +502,14 @@ function buildProvidedQuestions(
 
   return scopedQuestions.map((question, index) => ({
     id: `q${String(index + 1).padStart(2, "0")}-${randomUUID().replace(/-/g, "").slice(0, 6)}`,
-    kind: question.kind,
+    ...(question.kind ? { kind: questionKindSchema.parse(question.kind) } : {}),
     prompt: question.prompt,
     objective: question.objective,
     order: index
   }));
 }
 
-export function buildPlannedQuestions(
+function buildLegacyPlannedQuestions(
   topic: string,
   objective: string,
   intendedOutput?: string,
@@ -285,11 +578,11 @@ export function buildPlannedQuestions(
 
   return scopedPrompts.map((entry, index) => ({
     id: `q${String(index + 1).padStart(2, "0")}-${randomUUID().replace(/-/g, "").slice(0, 6)}`,
-      kind: entry.kind,
-      prompt: entry.prompt,
-      objective: index === 0 ? objective : entry.objective,
-      order: index
-    }));
+    kind: entry.kind,
+    prompt: entry.prompt,
+    objective: index === 0 ? objective : entry.objective,
+    order: index
+  }));
 }
 
 function normalizePlanningScope(maxQuestions?: number, families?: string[]): PlanningScope | undefined {
@@ -303,6 +596,56 @@ function normalizePlanningScope(maxQuestions?: number, families?: string[]): Pla
   return scope;
 }
 
+async function resolveQuestionPlanningCore(
+  input: CreateQuestionPlanInput | CreateQuestionPlanningContextInput
+): Promise<{
+  workspace: Awaited<ReturnType<typeof loadWorkspace>>;
+  topicRecord?: Awaited<ReturnType<typeof loadTopic>>;
+  binding: Awaited<ReturnType<typeof loadNotebookBinding>>["binding"];
+  notebookBindingId: string;
+  topicName: string;
+  objective: string;
+  intendedOutput?: string;
+  planningScope?: PlanningScope;
+  runId: string;
+  createdAt: string;
+}> {
+  const workspace = await loadWorkspace(input.cwd);
+  const topicRecord = input.topicId ? await loadTopic(input.topicId, input.cwd) : undefined;
+  const notebookBindingId =
+    input.notebookBindingId ??
+    (input.topicId ? await resolveNotebookBindingIdForTopic(workspace.rootDir, input.topicId) : undefined);
+
+  if (!notebookBindingId) {
+    throw new Error("Question planning requires a notebook binding. For the preferred flow, create a topic-bound notebook and plan by topic id.");
+  }
+
+  const { binding } = await loadNotebookBinding(notebookBindingId, input.cwd);
+  const timestamp = new Date();
+  const createdAt = timestamp.toISOString();
+  const topicName = normalizeObsidianText(topicRecord?.topic.name ?? input.topic ?? binding.topic);
+  const objective =
+    input.objective ??
+    topicRecord?.topic.goal ??
+    `Research ${topicName} through a planned NotebookLM Q&A run.`;
+  const intendedOutput = topicRecord?.topic.intendedOutput;
+  const planningScope = normalizePlanningScope(input.maxQuestions, input.families);
+  const runId = buildRunId(topicName, timestamp);
+
+  return {
+    workspace,
+    ...(topicRecord ? { topicRecord } : {}),
+    binding,
+    notebookBindingId,
+    topicName,
+    objective,
+    ...(intendedOutput ? { intendedOutput } : {}),
+    ...(planningScope ? { planningScope } : {}),
+    runId,
+    createdAt
+  };
+}
+
 function buildQuestionsMarkdown(
   workspace: Awaited<ReturnType<typeof loadWorkspace>>,
   batch: QuestionBatch,
@@ -314,7 +657,6 @@ function buildQuestionsMarkdown(
     return [
       `## ${summarizeQuestionTitle(question.prompt, question.id)}`,
       "",
-      `- Kind: ${question.kind}`,
       `- Objective: ${question.objective}`,
       `- Answer Note: ${toWikiLink(workspace, answerNote.absolutePath, answerNote.title)}`,
       "",
@@ -329,13 +671,12 @@ function buildQuestionsMarkdown(
       type: "questions",
       title: `${topicTitle} Questions`,
       aliases: makeAliases(batch.id),
-      tags: makeTags("sourceloop", "research", "questions", ...batch.questionFamilies),
+      tags: makeTags("sourceloop", "research", "questions", batch.planningMode),
       topic: topicTitle,
       objective: batch.objective,
       ...(batch.intendedOutput ? { output: batch.intendedOutput } : {}),
-      families: batch.questionFamilies,
+      ...(batch.planningMode ? { planning_mode: batch.planningMode } : {}),
       ...(batch.planningScope?.maxQuestions ? { max_questions: String(batch.planningScope.maxQuestions) } : {}),
-      ...(batch.planningScope?.selectedFamilies ? { selected_families: batch.planningScope.selectedFamilies } : {}),
       created: batch.createdAt,
       updated: batch.createdAt
     },
@@ -369,14 +710,18 @@ function buildQuestionsMarkdown(
 
 function describePlanningScope(batch: QuestionBatch): string {
   const parts: string[] = [];
+  parts.push(
+    batch.planningMode === "questions_file_override"
+      ? "manual question override"
+      : batch.planningMode === "ai_default"
+        ? "AI-generated from notebook summary"
+        : "legacy template planner"
+  );
   if (batch.planningScope?.maxQuestions !== undefined) {
     parts.push(`max ${batch.planningScope.maxQuestions} questions`);
   }
-  if (batch.planningScope?.selectedFamilies?.length) {
-    parts.push(`families: ${batch.planningScope.selectedFamilies.join(", ")}`);
-  }
 
-  return parts.length > 0 ? parts.join(" | ") : `default planner scope (${DEFAULT_MAX_QUESTIONS} questions)`;
+  return parts.join(" | ");
 }
 
 async function resolveNotebookBindingIdForTopic(rootDir: string, topicId: string): Promise<string> {
@@ -403,4 +748,8 @@ async function resolveNotebookBindingIdForTopic(rootDir: string, topicId: string
   }
 
   return match.id;
+}
+
+export function getQuestionPlannerSetupMessage(): string {
+  return `Use \`sourceloop plan-context ... --json\` to export planning context, author questions with the active agent, then pass them back with \`sourceloop plan ... --questions-file - --json\`. Set ${QUESTION_PLANNER_COMMAND_ENV} only if you still want an external planner command fallback.`;
 }

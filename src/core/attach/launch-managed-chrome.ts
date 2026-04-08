@@ -59,6 +59,9 @@ type CloseManagedChromeDeps = {
 };
 
 const execFileAsync = promisify(execFile);
+const DEFAULT_MANAGED_CHROME_LAUNCH_ARGS = [
+  "--window-size=1440,960"
+] as const;
 
 const defaultDeps: LaunchManagedChromeDeps = {
   resolveChromeExecutablePath,
@@ -151,6 +154,7 @@ export async function launchManagedChrome(
     `--remote-debugging-port=${remoteDebuggingPort}`,
     "--no-first-run",
     "--no-default-browser-check",
+    ...DEFAULT_MANAGED_CHROME_LAUNCH_ARGS,
     ...(input.launchArgs ?? reusableTarget?.launchArgs ?? []),
     "https://notebooklm.google.com/"
   ];

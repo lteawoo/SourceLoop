@@ -42,6 +42,7 @@ export function getRunPaths(workspace: LoadedWorkspace, runId: string) {
     runDir,
     indexMarkdownPath: path.join(runDir, "index.md"),
     indexJsonPath: path.join(runDir, "index.json"),
+    planningContextJsonPath: path.join(runDir, "planning-context.json"),
     questionsMarkdownPath: path.join(runDir, "questions.md"),
     questionsJsonPath: path.join(runDir, "questions.json"),
     exchangesDir: path.join(runDir, "exchanges"),

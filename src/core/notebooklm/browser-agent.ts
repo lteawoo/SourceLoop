@@ -30,6 +30,7 @@ import {
 import {
   extractCitationReferencesFromSnapshot,
   extractNormalizedAnswerFromSnapshot,
+  isLikelyNotebookLMPlaceholderAnswerText,
   type NotebookLMResponseSnapshot
 } from "./response-extraction.js";
 
@@ -177,6 +178,12 @@ export type ManagedNotebookBrowserImportResult = {
   failureReason?: string;
 };
 
+export type NotebookPlanningSnapshot = {
+  notebookTitle: string;
+  sourceCount: number;
+  summary: string;
+};
+
 export type NotebookLMImportSuccessCandidate = {
   signature: string;
   text: string;
@@ -184,6 +191,7 @@ export type NotebookLMImportSuccessCandidate = {
 
 export interface NotebookBrowserSession {
   preflight(notebookUrl?: string): Promise<void>;
+  capturePlanningSnapshot(notebookUrl: string): Promise<NotebookPlanningSnapshot>;
   askQuestion(question: PlannedQuestion): Promise<{ answer: string; citations: CitationReference[] }>;
   captureLatestAnswer(): Promise<{ answer: string; citations: CitationReference[] }>;
   createNotebook(title: string): Promise<ManagedNotebookBrowserCreateResult>;
@@ -282,6 +290,7 @@ async function createPlaywrightNotebookBrowserSession(input: {
     async preflight(notebookUrl?: string): Promise<void> {
       const targetUrl = notebookUrl ?? NOTEBOOKLM_DEFAULT_URL;
       const activePage = await ensurePage(targetUrl);
+      await ensureDesktopViewport(activePage);
       if (notebookUrl && input.reuseExistingNotebookPage && isNotebookPageMatch(activePage.url(), notebookUrl)) {
         await activePage.bringToFront().catch(() => undefined);
       } else {
@@ -296,8 +305,32 @@ async function createPlaywrightNotebookBrowserSession(input: {
 
       await ensureNotebookHomeAccessible(activePage);
     },
+    async capturePlanningSnapshot(notebookUrl: string): Promise<NotebookPlanningSnapshot> {
+      const activePage = await ensurePage(notebookUrl);
+      await ensureDesktopViewport(activePage);
+      if (input.reuseExistingNotebookPage && isNotebookPageMatch(activePage.url(), notebookUrl)) {
+        await activePage.bringToFront().catch(() => undefined);
+      } else {
+        await openNotebookPage(activePage, notebookUrl);
+      }
+
+      await ensureNotebookAccessible(activePage);
+      await waitForNotebookSettled(activePage);
+
+      const parsed = extractNotebookPlanningSnapshot({
+        pageTitle: await activePage.title(),
+        bodyText: await activePage.locator("body").innerText()
+      });
+
+      if (!parsed) {
+        throw new Error("NotebookLM planning context is not ready yet. Wait for the notebook summary to appear, then rerun planning.");
+      }
+
+      return parsed;
+    },
     async askQuestion(question: PlannedQuestion): Promise<{ answer: string; citations: CitationReference[] }> {
       const activePage = await ensurePage();
+      await ensureDesktopViewport(activePage);
       const inputSelector = await waitForFirstVisibleSelector(
         activePage,
         NOTEBOOKLM_QUERY_INPUT_SELECTORS,
@@ -316,6 +349,9 @@ async function createPlaywrightNotebookBrowserSession(input: {
       const answer = extractNormalizedAnswerFromSnapshot(responseSnapshot);
       if (!answer) {
         throw new Error(`NotebookLM returned an empty answer for question ${question.id}`);
+      }
+      if (isLikelyNotebookLMPlaceholderAnswerText(answer)) {
+        throw new Error(`NotebookLM returned a loading placeholder for question ${question.id}: ${answer}`);
       }
       let citations = extractCitationReferencesFromSnapshot(responseSnapshot.citationCandidates);
       if (shouldRetryNotebookLMCitationCapture(citations)) {
@@ -336,6 +372,7 @@ async function createPlaywrightNotebookBrowserSession(input: {
     },
     async captureLatestAnswer(): Promise<{ answer: string; citations: CitationReference[] }> {
       const activePage = await ensurePage();
+      await ensureDesktopViewport(activePage);
       await waitForNotebookSettled(activePage);
       const latestElement = await waitForLatestVisibleResponse(activePage, 30_000);
       if (!latestElement) {
@@ -347,6 +384,9 @@ async function createPlaywrightNotebookBrowserSession(input: {
       const answer = extractNormalizedAnswerFromSnapshot(responseSnapshot);
       if (!answer) {
         throw new Error("NotebookLM did not expose a readable latest answer.");
+      }
+      if (isLikelyNotebookLMPlaceholderAnswerText(answer)) {
+        throw new Error(`NotebookLM exposed a loading placeholder instead of a finished answer: ${answer}`);
       }
       let citations = extractCitationReferencesFromSnapshot(responseSnapshot.citationCandidates);
       if (shouldRetryNotebookLMCitationCapture(citations)) {
@@ -367,6 +407,7 @@ async function createPlaywrightNotebookBrowserSession(input: {
     },
     async createNotebook(title: string): Promise<ManagedNotebookBrowserCreateResult> {
       const activePage = await ensurePage();
+      await ensureDesktopViewport(activePage);
       await openNotebookPage(activePage, NOTEBOOKLM_DEFAULT_URL);
       await ensureNotebookHomeAccessible(activePage);
       await clickFirstVisibleLocator(activePage, NOTEBOOKLM_CREATE_NOTEBOOK_SELECTORS, "Could not find a NotebookLM create notebook control.");
@@ -380,6 +421,7 @@ async function createPlaywrightNotebookBrowserSession(input: {
     },
     async importSource(input: ManagedNotebookBrowserImportInput): Promise<ManagedNotebookBrowserImportResult> {
       const activePage = await ensurePage(input.notebookUrl);
+      await ensureDesktopViewport(activePage);
       if (input.notebookUrl) {
         if (isNotebookPageMatch(activePage.url(), input.notebookUrl)) {
           await activePage.bringToFront().catch(() => undefined);
@@ -431,7 +473,7 @@ async function createPlaywrightNotebookBrowserSession(input: {
           baselineSourceCount,
           input,
           importSurface,
-          12_000
+          30_000
         );
       } catch (error) {
         return {
@@ -495,6 +537,145 @@ export function extractNotebookResourceId(url: string): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+const NOTEBOOK_SUMMARY_STOP_LINES = new Set([
+  "keep",
+  "copy_all",
+  "thumb_up",
+  "thumb_down",
+  "채팅",
+  "스튜디오",
+  "메모 추가",
+  "notebooklm이 부정확한 정보를 표시할 수 있으므로 대답을 다시 한번 확인하세요."
+]);
+
+const NOTEBOOK_SUMMARY_STOP_PATTERNS = [
+  /^소스\s+\d+개$/,
+  /^\d+\s+sources?$/i,
+  /^arrow_forward$/,
+  /^audio_magic_eraser$/,
+  /^tablet$/,
+  /^subscriptions$/,
+  /^flowchart$/,
+  /^auto_tab_group$/,
+  /^cards_star$/,
+  /^quiz$/,
+  /^stacked_bar_chart$/,
+  /^table_view$/,
+  /^edit_fix_auto$/,
+  /^dock_to_left$/,
+  /^dock_to_right$/,
+  /^search_spark$/,
+  /^language$/,
+  /^keyboard_arrow_down$/,
+  /^tune$/,
+  /^more_vert$/,
+  /^질문 추천(?:\s+\d+)?$/,
+  /^추천 질문(?:\s+\d+)?$/,
+  /^suggested questions?(?:\s+\d+)?$/i,
+  /^settings$/i,
+  /^share$/i,
+  /^trending_up$/i
+] as const;
+
+export function extractNotebookPlanningSnapshot(input: {
+  pageTitle: string;
+  bodyText: string;
+}): NotebookPlanningSnapshot | undefined {
+  const notebookTitle = normalizeNotebookPlanningTitle(input.pageTitle);
+  const sourceCount = extractNotebookPlanningSourceCount(input.bodyText);
+  const summary = extractNotebookPlanningSummaryBody(input.bodyText);
+
+  if (!notebookTitle || sourceCount === undefined || !summary) {
+    return undefined;
+  }
+
+  return {
+    notebookTitle,
+    sourceCount,
+    summary
+  };
+}
+
+export function didImportProducePlanningSnapshotEvidence(
+  baselineSourceCount: number | undefined,
+  snapshot: NotebookPlanningSnapshot | undefined,
+  options?: {
+    allowFirstSourceImport?: boolean;
+  }
+): boolean {
+  if (!snapshot) {
+    return false;
+  }
+
+  if (baselineSourceCount !== undefined) {
+    return snapshot.sourceCount > baselineSourceCount;
+  }
+
+  return Boolean(options?.allowFirstSourceImport) && snapshot.sourceCount > 0;
+}
+
+function normalizeNotebookPlanningTitle(pageTitle: string): string | undefined {
+  const normalized = normalizeControlText(pageTitle).replace(/\s*-\s*NotebookLM$/i, "").trim();
+  return normalized || undefined;
+}
+
+function extractNotebookPlanningSourceCount(bodyText: string): number | undefined {
+  const normalized = normalizeControlText(bodyText);
+  const koreanMatch = normalized.match(/소스\s+(\d+)개/);
+  if (koreanMatch) {
+    return Number.parseInt(koreanMatch[1] ?? "", 10);
+  }
+
+  const englishMatch = normalized.match(/(\d+)\s+sources?/i);
+  if (englishMatch) {
+    return Number.parseInt(englishMatch[1] ?? "", 10);
+  }
+
+  return undefined;
+}
+
+function extractNotebookPlanningSummaryBody(bodyText: string): string | undefined {
+  const lines = bodyText
+    .split("\n")
+    .map((line) => normalizeControlText(line))
+    .filter(Boolean);
+
+  const sourceCountIndex = lines.findIndex((line) => /^소스\s+\d+개$/.test(line) || /^\d+\s+sources?$/i.test(line));
+  if (sourceCountIndex === -1) {
+    return undefined;
+  }
+
+  const summaryLines: string[] = [];
+  for (const line of lines.slice(sourceCountIndex + 1)) {
+    const normalizedLine = line.trim();
+    if (!normalizedLine) {
+      if (summaryLines.length > 0) {
+        break;
+      }
+      continue;
+    }
+
+    if (NOTEBOOK_SUMMARY_STOP_LINES.has(normalizedLine) || NOTEBOOK_SUMMARY_STOP_PATTERNS.some((pattern) => pattern.test(normalizedLine))) {
+      if (summaryLines.length > 0) {
+        break;
+      }
+      continue;
+    }
+
+    if (/[?？]$/.test(normalizedLine)) {
+      if (summaryLines.length === 0) {
+        return undefined;
+      }
+      break;
+    }
+
+    summaryLines.push(normalizedLine);
+  }
+
+  const summary = summaryLines.join("\n").trim();
+  return summary || undefined;
 }
 
 function normalizeNotebookPath(url: string): string | undefined {
@@ -803,6 +984,15 @@ async function looksLikeSignInPage(page: Page): Promise<boolean> {
   return text.includes("sign in") || text.includes("로그인") || text.includes("continue to");
 }
 
+async function ensureDesktopViewport(page: Page): Promise<void> {
+  await page
+    .setViewportSize({
+      width: NOTEBOOKLM_DESKTOP_VIEWPORT.width,
+      height: NOTEBOOKLM_DESKTOP_VIEWPORT.height
+    })
+    .catch(() => undefined);
+}
+
 async function waitForFirstVisibleSelector(
   page: Page,
   selectors: readonly string[],
@@ -828,6 +1018,7 @@ async function waitForFirstVisibleSelector(
 }
 
 type NotebookImportSurface = "add_source" | "initial_source_intake";
+const NOTEBOOKLM_DESKTOP_VIEWPORT = { width: 1440, height: 960 } as const;
 
 async function waitForNotebookImportSurface(page: Page, timeout = 10_000): Promise<NotebookImportSurface> {
   const deadline = Date.now() + timeout;
@@ -1072,7 +1263,7 @@ async function waitForLatestVisibleResponse(page: Page, timeout: number): Promis
       try {
         if (await latestElement.isVisible()) {
           const text = extractNormalizedAnswerFromSnapshot(await collectResponseTextSnapshot(latestElement));
-          if (text) {
+          if (text && !isLikelyNotebookLMPlaceholderAnswerText(text)) {
             return latestElement;
           }
         }
@@ -1124,7 +1315,11 @@ async function waitForStableLatestResponse(page: Page, previousAnswer: string | 
       }
 
       const candidateText = extractNormalizedAnswerFromSnapshot(await collectResponseTextSnapshot(candidate));
-      if (!candidateText || candidateText === previousAnswer) {
+      if (
+        !candidateText ||
+        candidateText === previousAnswer ||
+        isLikelyNotebookLMPlaceholderAnswerText(candidateText)
+      ) {
         continue;
       }
 
@@ -1954,6 +2149,25 @@ async function waitForImportOutcome(
       if (
         didImportIncreaseVisibleSourceCount(baselineSourceCount, currentSourceCount) &&
         (await hasImportSurfaceSettled(page, importSurface))
+      ) {
+        return {
+          status: "imported"
+        };
+      }
+
+      const importSurfaceSettled = await hasImportSurfaceSettled(page, importSurface);
+      if (
+        importSurfaceSettled &&
+        didImportProducePlanningSnapshotEvidence(
+          baselineSourceCount,
+          extractNotebookPlanningSnapshot({
+            pageTitle: await page.title().catch(() => ""),
+            bodyText: await page.locator("body").innerText().catch(() => "")
+          }),
+          {
+            allowFirstSourceImport: importSurface === "initial_source_intake"
+          }
+        )
       ) {
         return {
           status: "imported"

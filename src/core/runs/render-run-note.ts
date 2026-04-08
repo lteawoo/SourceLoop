@@ -66,12 +66,12 @@ export function buildRunIndexMarkdown(input: BuildRunIndexMarkdownInput): string
       type: "run",
       title: `${topicTitle} Run`,
       aliases: makeAliases(run.id),
-      tags: makeTags("sourceloop", "research", "run", run.status, run.executionMode),
+      tags: makeTags("sourceloop", "research", "run", run.status, run.executionMode, run.planningMode),
       topic: topicTitle,
       status: run.status,
       ...(run.executionMode ? { mode: run.executionMode } : {}),
+      ...(run.planningMode ? { planning_mode: run.planningMode } : {}),
       ...(run.planningScope?.maxQuestions ? { max_questions: String(run.planningScope.maxQuestions) } : {}),
-      ...(run.planningScope?.selectedFamilies ? { selected_families: run.planningScope.selectedFamilies } : {}),
       ...(run.executionScope?.questionIds ? { selected_question_ids: run.executionScope.questionIds } : {}),
       ...(run.executionScope?.fromQuestionId ? { from_question: run.executionScope.fromQuestionId } : {}),
       ...(run.executionScope?.limit ? { execution_limit: String(run.executionScope.limit) } : {}),
@@ -121,11 +121,15 @@ ${outputLines}`
 
 function describePlanningScope(batch: QuestionBatch): string {
   const parts: string[] = [];
+  parts.push(
+    batch.planningMode === "questions_file_override"
+      ? "manual question override"
+      : batch.planningMode === "ai_default"
+        ? "AI-generated from notebook summary"
+        : "legacy template planner"
+  );
   if (batch.planningScope?.maxQuestions !== undefined) {
     parts.push(`max ${batch.planningScope.maxQuestions} questions`);
-  }
-  if (batch.planningScope?.selectedFamilies?.length) {
-    parts.push(`families: ${batch.planningScope.selectedFamilies.join(", ")}`);
   }
   return parts.length ? parts.join(" | ") : "default planner scope";
 }
