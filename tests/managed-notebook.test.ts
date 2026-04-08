@@ -196,6 +196,77 @@ describe("managed notebook ingestion", () => {
     expect(plan.batch.questions).toHaveLength(1);
   });
 
+  it("allows AI-default planning when notebook summary context proves the managed notebook already has usable source content", async () => {
+    const workspaceRoot = await fsPromises.mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
+    await initializeWorkspace({ directory: workspaceRoot, force: false });
+
+    const topic = await createTopic({
+      cwd: workspaceRoot,
+      name: "Summary-backed managed evidence topic"
+    });
+    const attachTarget = await registerChromeEndpointTarget({
+      cwd: workspaceRoot,
+      name: "Summary-backed managed Chrome",
+      endpoint: "http://127.0.0.1:9222"
+    });
+    const managedNotebook = await createManagedNotebook({
+      cwd: workspaceRoot,
+      topicId: topic.topic.id,
+      name: "Summary-backed managed notebook",
+      attachTargetId: attachTarget.target.id,
+      sessionFactory: createManagedSessionFactory({
+        createdNotebookUrl: "https://notebooklm.google.com/notebook/summary-backed-managed"
+      })
+    });
+
+    await importIntoManagedNotebook({
+      cwd: workspaceRoot,
+      notebookBindingId: managedNotebook.binding.id,
+      url: "https://youtube.com/watch?v=queued-summary-backed",
+      sessionFactory: createManagedSessionFactory({
+        importResults: [{ status: "queued" }]
+      })
+    });
+
+    const refreshed = await loadTopic(topic.topic.id, workspaceRoot);
+    expect(refreshed.topic.status).toBe("collecting_sources");
+    expect(refreshed.corpus.managedNotebookImportIds).toHaveLength(0);
+
+    const originalPlannerCommand = process.env.SOURCELOOP_QUESTION_PLANNER_CMD;
+    process.env.SOURCELOOP_QUESTION_PLANNER_CMD = "this-env-should-not-be-used";
+
+    try {
+      const plan = await createQuestionPlan({
+        cwd: workspaceRoot,
+        topicId: topic.topic.id,
+        maxQuestions: 1,
+        requireAiPlanner: true,
+        planningSnapshot: {
+          notebookTitle: "Summary-backed managed notebook",
+          sourceCount: 1,
+          summary: "NotebookLM already exposed a summary for the queued managed import."
+        },
+        questionPlanner: async () => [
+          {
+            objective: "Summary-backed planning objective",
+            prompt: "What does the notebook summary emphasize?"
+          }
+        ]
+      });
+
+      expect(plan.batch.planningMode).toBe("ai_default");
+      expect(plan.planningContext?.notebookTitle).toBe("Summary-backed managed notebook");
+      expect(plan.planningContext?.summary).toContain("NotebookLM already exposed a summary");
+      expect(plan.batch.questions).toHaveLength(1);
+    } finally {
+      if (originalPlannerCommand === undefined) {
+        delete process.env.SOURCELOOP_QUESTION_PLANNER_CMD;
+      } else {
+        process.env.SOURCELOOP_QUESTION_PLANNER_CMD = originalPlannerCommand;
+      }
+    }
+  });
+
   it("imports local source artifacts into managed notebooks and persists lifecycle status", async () => {
     const workspaceRoot = await fsPromises.mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
     await initializeWorkspace({ directory: workspaceRoot, force: false });
@@ -392,6 +463,13 @@ function createManagedSessionFactory(options: {
     async createSession(): Promise<NotebookBrowserSession> {
       return {
         async preflight() {},
+        async capturePlanningSnapshot() {
+          return {
+            notebookTitle: "Managed Notebook",
+            sourceCount: 1,
+            summary: "Managed notebook summary."
+          };
+        },
         async askQuestion() {
           throw new Error("askQuestion is not used in managed notebook tests");
         },

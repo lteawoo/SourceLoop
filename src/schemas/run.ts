@@ -2,9 +2,10 @@ import { z } from "zod";
 
 export const runStatusSchema = z.enum(["planned", "running", "completed", "incomplete", "failed"]);
 export const questionKindSchema = z.enum(["core", "structure", "deep_dive", "comparison", "execution", "evidence_gap"]);
+export const planningModeSchema = z.enum(["ai_default", "questions_file_override"]);
 
 export const plannedQuestionDraftSchema = z.object({
-  kind: questionKindSchema,
+  kind: questionKindSchema.optional(),
   prompt: z.string().min(1),
   objective: z.string().min(1)
 });
@@ -13,7 +14,7 @@ export const plannedQuestionDraftListSchema = z.array(plannedQuestionDraftSchema
 
 export const plannedQuestionSchema = z.object({
   id: z.string().min(1),
-  kind: questionKindSchema,
+  kind: questionKindSchema.optional(),
   prompt: z.string().min(1),
   objective: z.string().min(1),
   order: z.number().int().nonnegative()
@@ -42,7 +43,8 @@ export const questionBatchSchema = z.object({
   notebookBindingId: z.string().min(1),
   objective: z.string().min(1),
   intendedOutput: z.string().min(1).optional(),
-  questionFamilies: z.array(z.string().min(1)).default([]),
+  planningMode: planningModeSchema.optional(),
+  questionFamilies: z.array(questionKindSchema).default([]),
   planningScope: planningScopeSchema.optional(),
   createdAt: z.string().datetime(),
   questions: z.array(plannedQuestionSchema).min(1)
@@ -76,6 +78,7 @@ export const runIndexSchema = z.object({
   topicId: z.string().min(1).optional(),
   notebookBindingId: z.string().min(1),
   questionBatchId: z.string().min(1),
+  planningMode: planningModeSchema.optional(),
   status: runStatusSchema,
   executionMode: z.enum(["attached_chrome", "fixture"]).optional(),
   attachedChromeTargetId: z.string().min(1).optional(),
@@ -87,6 +90,39 @@ export const runIndexSchema = z.object({
   failedQuestionId: z.string().min(1).optional(),
   failureReason: z.string().min(1).optional(),
   outputArtifacts: z.array(z.string().min(1)).default([])
+});
+
+export const questionPlanningContextSchema = z.object({
+  id: z.string().min(1),
+  type: z.literal("question_planning_context"),
+  runId: z.string().min(1),
+  topic: z.string().min(1),
+  topicId: z.string().min(1).optional(),
+  notebookBindingId: z.string().min(1),
+  notebookUrl: z.string().url().optional(),
+  notebookTitle: z.string().min(1).optional(),
+  sourceCount: z.number().int().nonnegative().optional(),
+  summary: z.string().min(1).optional(),
+  objective: z.string().min(1),
+  intendedOutput: z.string().min(1).optional(),
+  planningMode: planningModeSchema,
+  createdAt: z.string().datetime()
+});
+
+export const questionPlanningContextPreviewSchema = z.object({
+  type: z.literal("question_planning_context_preview"),
+  topic: z.string().min(1),
+  topicId: z.string().min(1).optional(),
+  notebookBindingId: z.string().min(1),
+  notebookUrl: z.string().url().optional(),
+  notebookTitle: z.string().min(1).optional(),
+  sourceCount: z.number().int().nonnegative().optional(),
+  summary: z.string().min(1).optional(),
+  objective: z.string().min(1),
+  intendedOutput: z.string().min(1).optional(),
+  planningMode: planningModeSchema,
+  planningScope: planningScopeSchema.optional(),
+  createdAt: z.string().datetime()
 });
 
 export const outputArtifactSchema = z.object({
@@ -105,6 +141,9 @@ export type PlannedQuestion = z.infer<typeof plannedQuestionSchema>;
 export type PlanningScope = z.infer<typeof planningScopeSchema>;
 export type ExecutionScope = z.infer<typeof executionScopeSchema>;
 export type QuestionBatch = z.infer<typeof questionBatchSchema>;
+export type PlanningMode = z.infer<typeof planningModeSchema>;
+export type QuestionPlanningContext = z.infer<typeof questionPlanningContextSchema>;
+export type QuestionPlanningContextPreview = z.infer<typeof questionPlanningContextPreviewSchema>;
 export type QAExchange = z.infer<typeof qaExchangeSchema>;
 export type QARunIndex = z.infer<typeof runIndexSchema>;
 export type OutputArtifact = z.infer<typeof outputArtifactSchema>;

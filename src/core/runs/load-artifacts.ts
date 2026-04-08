@@ -2,7 +2,16 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { loadWorkspace } from "../workspace/load-workspace.js";
 import { notebookBindingSchema, type NotebookBinding } from "../../schemas/notebook.js";
-import { questionBatchSchema, qaExchangeSchema, runIndexSchema, type QAExchange, type QARunIndex, type QuestionBatch } from "../../schemas/run.js";
+import {
+  questionBatchSchema,
+  questionPlanningContextSchema,
+  qaExchangeSchema,
+  runIndexSchema,
+  type QAExchange,
+  type QARunIndex,
+  type QuestionBatch,
+  type QuestionPlanningContext
+} from "../../schemas/run.js";
 import { getRunPaths, getVaultPaths } from "../vault/paths.js";
 
 export async function loadNotebookBinding(
@@ -49,6 +58,13 @@ export async function loadRunExchanges(runId: string, cwd?: string): Promise<QAE
     }
     throw error;
   }
+}
+
+export async function loadQuestionPlanningContext(runId: string, cwd?: string): Promise<QuestionPlanningContext> {
+  const workspace = await loadWorkspace(cwd);
+  const runPaths = getRunPaths(workspace, runId);
+  const raw = await readFile(runPaths.planningContextJsonPath, "utf8");
+  return questionPlanningContextSchema.parse(JSON.parse(raw));
 }
 
 async function readDirJsonFiles(directory: string): Promise<string[]> {

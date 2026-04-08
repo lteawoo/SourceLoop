@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   canonicalizeNotebookUrl,
   countRichNotebookLMCitations,
+  didImportProducePlanningSnapshotEvidence,
   didImportIncreaseVisibleSourceCount,
   ensureNotebookTargetMatch,
+  extractNotebookPlanningSnapshot,
   didImportProduceNewMatchingCandidate,
   getManagedImportSuccessNeedles,
   hasNotebookLMCitationSnippet,
@@ -17,6 +19,7 @@ import {
   type ManagedNotebookBrowserImportInput,
   type NotebookLMCitationOverflowCandidate
 } from "../src/core/notebooklm/browser-agent.js";
+import { extractNormalizedAnswerFromSnapshot } from "../src/core/notebooklm/response-extraction.js";
 
 describe("NotebookLM browser agent overflow controls", () => {
   it("keeps only real numeric citation markers and ignores overflow buttons", () => {
@@ -154,11 +157,72 @@ describe("NotebookLM browser agent overflow controls", () => {
     expect(parseNotebookSourceCount("no source count here")).toBeUndefined();
   });
 
+  it("extracts notebook-level planning context from the notebook detail view text", () => {
+    expect(
+      extractNotebookPlanningSnapshot({
+        pageTitle: "AI 에이전트 구축을 위한 하네스 엔지니어링 전략 - NotebookLM",
+        bodyText: [
+          "AI 에이전트 구축을 위한 하네스 엔지니어링 전략",
+          "소스 1개",
+          "이 텍스트는 인공지능 에이전트를 단순한 코딩 도구를 넘어 실무급 성능을 내는 에이전트로 진화시키는 하네스 엔지니어링의 핵심 개념과 전략을 다룹니다.",
+          "저자는 모델 자체의 성능보다 컨텍스트, 도구, 평가라는 세 가지 축으로 구성된 환경 설계가 결과물의 격차를 만든다고 강조합니다.",
+          "질문 추천 1",
+          "하니스 엔지니어링이 왜 중요한가?"
+        ].join("\n")
+      })
+    ).toEqual({
+      notebookTitle: "AI 에이전트 구축을 위한 하네스 엔지니어링 전략",
+      sourceCount: 1,
+      summary: [
+        "이 텍스트는 인공지능 에이전트를 단순한 코딩 도구를 넘어 실무급 성능을 내는 에이전트로 진화시키는 하네스 엔지니어링의 핵심 개념과 전략을 다룹니다.",
+        "저자는 모델 자체의 성능보다 컨텍스트, 도구, 평가라는 세 가지 축으로 구성된 환경 설계가 결과물의 격차를 만든다고 강조합니다."
+      ].join("\n")
+    });
+  });
+
+  it("treats planning context as not ready when the notebook summary body is missing", () => {
+    expect(
+      extractNotebookPlanningSnapshot({
+        pageTitle: "JSON Notebook - NotebookLM",
+        bodyText: ["JSON Notebook", "소스 1개", "질문 추천 1", "무엇을 먼저 봐야 할까?"].join("\n")
+      })
+    ).toBeUndefined();
+  });
+
   it("treats source count growth as import success even when row signatures are unchanged", () => {
     expect(didImportIncreaseVisibleSourceCount(1, 2)).toBe(true);
     expect(didImportIncreaseVisibleSourceCount(1, 1)).toBe(false);
     expect(didImportIncreaseVisibleSourceCount(undefined, 2)).toBe(false);
     expect(didImportIncreaseVisibleSourceCount(1, undefined)).toBe(false);
+  });
+
+  it("treats notebook summary snapshots as import success evidence for the first source or source-count growth", () => {
+    const snapshot = {
+      notebookTitle: "Harness Engineering Notebook",
+      sourceCount: 1,
+      summary: "NotebookLM generated a summary after the first source import."
+    };
+
+    expect(
+      didImportProducePlanningSnapshotEvidence(undefined, snapshot, {
+        allowFirstSourceImport: true
+      })
+    ).toBe(true);
+    expect(
+      didImportProducePlanningSnapshotEvidence(undefined, snapshot, {
+        allowFirstSourceImport: false
+      })
+    ).toBe(false);
+    expect(
+      didImportProducePlanningSnapshotEvidence(0, snapshot, {
+        allowFirstSourceImport: false
+      })
+    ).toBe(true);
+    expect(
+      didImportProducePlanningSnapshotEvidence(1, snapshot, {
+        allowFirstSourceImport: false
+      })
+    ).toBe(false);
   });
 
   it("distinguishes title-only citations from citations with real snippets", () => {
@@ -227,5 +291,22 @@ describe("NotebookLM browser agent overflow controls", () => {
 
     expect(state.settled).toBe(true);
     expect(state.stableCount).toBe(0);
+  });
+
+  it.each([
+    "Getting the context...",
+    "Getting the gist...",
+    "Scanning the text...",
+    "Expanding the Definition...",
+    "Evaluating Comparative Capabilities...",
+    "Documenting The Execution..."
+  ])("does not normalize NotebookLM loading text into a finished answer: %s", (placeholderText) => {
+    expect(
+      extractNormalizedAnswerFromSnapshot({
+        responseText: placeholderText,
+        bodyTexts: [placeholderText],
+        citationCandidates: []
+      })
+    ).toBe("");
   });
 });

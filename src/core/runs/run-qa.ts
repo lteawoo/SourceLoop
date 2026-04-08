@@ -13,6 +13,7 @@ import {
   type QARunIndex,
   type QuestionBatch
 } from "../../schemas/run.js";
+import { isLikelyNotebookLMPlaceholderAnswerText } from "../notebooklm/response-extraction.js";
 import { toFrontmatterMarkdown } from "../ingest/frontmatter.js";
 import { writeJsonFile } from "../../lib/write-json.js";
 import { loadTopic, refreshTopicArtifacts } from "../topics/manage-topics.js";
@@ -111,6 +112,7 @@ export async function executeQARun(input: ExecuteQARunInput): Promise<ExecuteQAR
     for (const question of questionsToExecute) {
       try {
         const answer = await input.adapter.askQuestion(binding, question);
+        assertNotebookLMAnswerIsMeaningful(answer.answer, question.id);
         const exchange = await writeExchangeArtifact({
           workspace,
           runId: run.id,
@@ -190,6 +192,7 @@ export async function importLatestAnswerIntoRun(
   const completed = new Map(existingExchanges.map((exchange) => [exchange.questionId, exchange]));
 
   const question = resolveImportQuestion(batch, completed, input.questionId);
+  assertNotebookLMAnswerIsMeaningful(input.answer.answer, question.id);
   const exchange = await writeExchangeArtifact({
     workspace,
     runId: run.id,
@@ -225,6 +228,12 @@ export async function importLatestAnswerIntoRun(
     exchange,
     importedQuestionId: question.id
   };
+}
+
+function assertNotebookLMAnswerIsMeaningful(answerText: string, questionId: string): void {
+  if (isLikelyNotebookLMPlaceholderAnswerText(answerText)) {
+    throw new Error(`NotebookLM returned a loading placeholder for question ${questionId}: ${answerText}`);
+  }
 }
 
 async function preflightTopicContext(

@@ -1,11 +1,13 @@
-import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it } from "vitest";
 import { doctorCommand } from "../src/commands/doctor.js";
 import { notebookBindCommand } from "../src/commands/notebook-bind.js";
 import { notebookSourceCommand } from "../src/commands/notebook-source.js";
-import { planCommand } from "../src/commands/plan.js";
+import { planContextCommand } from "../src/commands/plan-context.js";
+import { planCommand, resolvePlanInput } from "../src/commands/plan.js";
 import { runCommand } from "../src/commands/run.js";
 import { statusCommand } from "../src/commands/status.js";
 import { topicCommand } from "../src/commands/topic.js";
@@ -28,7 +30,9 @@ import { ingestSource } from "../src/core/ingest/ingest-source.js";
 import { loadWorkspace } from "../src/core/workspace/load-workspace.js";
 import { getVaultPaths } from "../src/core/vault/paths.js";
 import { registerChromeEndpointTarget, registerChromeProfileTarget } from "../src/core/attach/manage-targets.js";
+import { getQuestionPlannerSetupMessage } from "../src/core/runs/question-planner.js";
 import type { ManagedNotebookBrowserImportInput, NotebookBrowserSession, NotebookBrowserSessionFactory } from "../src/core/notebooklm/browser-agent.js";
+import { loadTopic } from "../src/core/topics/manage-topics.js";
 
 describe("operator CLI workflow", () => {
   afterEach(() => {
@@ -639,6 +643,12 @@ describe("operator CLI workflow", () => {
     await initializeWorkspace({ directory: workspaceRoot, force: false });
     process.chdir(workspaceRoot);
 
+    const attachTarget = await registerChromeEndpointTarget({
+      cwd: workspaceRoot,
+      name: "JSON Chrome",
+      endpoint: "http://127.0.0.1:9222"
+    });
+
     const topicCreateJson = JSON.parse(
       await captureStdout(() =>
         topicCommand.parseAsync(["create", "--name", "JSON Topic", "--json"], { from: "user" })
@@ -656,6 +666,8 @@ describe("operator CLI workflow", () => {
             "topic-json-topic",
             "--url",
             "https://notebooklm.google.com/notebook/json",
+            "--attach-target",
+            attachTarget.target.id,
             "--json"
           ],
           { from: "user" }
@@ -685,12 +697,83 @@ describe("operator CLI workflow", () => {
     ) as { manifest: { id: string } };
     expect(notebookSourceJson.manifest.id).toContain("notebook-source-");
 
-    const planJson = JSON.parse(
-      await captureStdout(() =>
-        planCommand.parseAsync(["topic-json-topic", "--max-questions", "1", "--json"], { from: "user" })
-      )
-    ) as { run: { id: string }; batch: { questions: Array<{ id: string }> } };
+    const browserAgentModule = await import("../src/core/notebooklm/browser-agent.js");
+    const originalCreateSession = browserAgentModule.defaultNotebookBrowserSessionFactory.createSession;
+    const originalPlannerCommand = process.env.SOURCELOOP_QUESTION_PLANNER_CMD;
+    browserAgentModule.defaultNotebookBrowserSessionFactory.createSession = async () => ({
+      async preflight() {},
+      async capturePlanningSnapshot() {
+        return {
+          notebookTitle: "JSON Notebook",
+          sourceCount: 1,
+          summary: "JSON notebook summary."
+        };
+      },
+      async askQuestion() {
+        throw new Error("unused");
+      },
+      async captureLatestAnswer() {
+        throw new Error("unused");
+      },
+      async createNotebook() {
+        throw new Error("unused");
+      },
+      async importSource() {
+        throw new Error("unused");
+      },
+      async close() {}
+    });
+    process.env.SOURCELOOP_QUESTION_PLANNER_CMD = buildInlinePlannerCommand(1);
+
+    let planJson: {
+      run: { id: string };
+      batch: { planningMode?: string; questions: Array<{ id: string }> };
+      planningContext?: { notebookTitle?: string; sourceCount?: number; summary?: string; planningMode?: string };
+      planningContextJsonPath?: string;
+    };
+    try {
+      planJson = JSON.parse(
+        await captureStdout(() =>
+          planCommand.parseAsync(["topic-json-topic", "--max-questions", "1", "--json"], { from: "user" })
+        )
+      ) as {
+        run: { id: string };
+        batch: { planningMode?: string; questions: Array<{ id: string }> };
+        planningContext?: { notebookTitle?: string; sourceCount?: number; summary?: string; planningMode?: string };
+        planningContextJsonPath?: string;
+      };
+    } finally {
+      browserAgentModule.defaultNotebookBrowserSessionFactory.createSession = originalCreateSession;
+      if (originalPlannerCommand === undefined) {
+        delete process.env.SOURCELOOP_QUESTION_PLANNER_CMD;
+      } else {
+        process.env.SOURCELOOP_QUESTION_PLANNER_CMD = originalPlannerCommand;
+      }
+    }
+
+    expect(planJson.batch.planningMode).toBe("ai_default");
     expect(planJson.batch.questions).toHaveLength(1);
+    expect(planJson.planningContext).toMatchObject({
+      notebookTitle: "JSON Notebook",
+      sourceCount: 1,
+      summary: "JSON notebook summary.",
+      planningMode: "ai_default"
+    });
+    expect(planJson.planningContextJsonPath).toBeDefined();
+    expect(path.basename(planJson.planningContextJsonPath!)).toBe("planning-context.json");
+
+    const planningContextJson = JSON.parse(await readFile(planJson.planningContextJsonPath!, "utf8")) as {
+      notebookTitle?: string;
+      sourceCount?: number;
+      summary?: string;
+      planningMode?: string;
+    };
+    expect(planningContextJson).toMatchObject({
+      notebookTitle: "JSON Notebook",
+      sourceCount: 1,
+      summary: "JSON notebook summary.",
+      planningMode: "ai_default"
+    });
 
     const fixturePath = path.join(workspaceRoot, "json-run-fixture.json");
     await writeFile(
@@ -731,10 +814,280 @@ describe("operator CLI workflow", () => {
     expect(Array.isArray(doctorJson.findings)).toBe(true);
   });
 
+  it("documents agent-session planning guidance in the plan help output", () => {
+    const help = planCommand.helpInformation();
+
+    expect(help).toContain("or - to read JSON from stdin");
+    expect(getQuestionPlannerSetupMessage()).toContain("sourceloop plan-context ... --json");
+    expect(getQuestionPlannerSetupMessage()).toContain("sourceloop plan ... --questions-file - --json");
+    expect(getQuestionPlannerSetupMessage()).toContain("SOURCELOOP_QUESTION_PLANNER_CMD");
+  });
+
+  it("exports notebook-summary planning context for the active agent session", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
+    await initializeWorkspace({ directory: workspaceRoot, force: false });
+    process.chdir(workspaceRoot);
+
+    const attachTarget = await registerChromeEndpointTarget({
+      cwd: workspaceRoot,
+      name: "Planning Context Chrome",
+      endpoint: "http://127.0.0.1:9222"
+    });
+
+    await captureStdout(() =>
+      topicCommand.parseAsync(["create", "--name", "Planning Context Topic", "--json"], { from: "user" })
+    );
+
+    const notebookBindJson = JSON.parse(
+      await captureStdout(() =>
+        notebookBindCommand.parseAsync(
+          [
+            "--name",
+            "Planning Context Notebook",
+            "--topic-id",
+            "topic-planning-context-topic",
+            "--url",
+            "https://notebooklm.google.com/notebook/planning-context",
+            "--attach-target",
+            attachTarget.target.id,
+            "--json"
+          ],
+          { from: "user" }
+        )
+      )
+    ) as { binding: { id: string } };
+
+    await captureStdout(() =>
+      notebookSourceCommand.parseAsync(
+        [
+          "declare",
+          "--topic-id",
+          "topic-planning-context-topic",
+          "--notebook",
+          notebookBindJson.binding.id,
+          "--kind",
+          "document-set",
+          "--title",
+          "Planning Context Source Set",
+          "--json"
+        ],
+        { from: "user" }
+      )
+    );
+
+    const browserAgentModule = await import("../src/core/notebooklm/browser-agent.js");
+    const originalCreateSession = browserAgentModule.defaultNotebookBrowserSessionFactory.createSession;
+    browserAgentModule.defaultNotebookBrowserSessionFactory.createSession = async () => ({
+      async preflight() {},
+      async capturePlanningSnapshot() {
+        return {
+          notebookTitle: "Planning Context Notebook",
+          sourceCount: 1,
+          summary: "Planning context notebook summary."
+        };
+      },
+      async askQuestion() {
+        throw new Error("unused");
+      },
+      async captureLatestAnswer() {
+        throw new Error("unused");
+      },
+      async createNotebook() {
+        throw new Error("unused");
+      },
+      async importSource() {
+        throw new Error("unused");
+      },
+      async close() {}
+    });
+
+    try {
+      const contextJson = JSON.parse(
+        await captureStdout(() =>
+          planContextCommand.parseAsync(["topic-planning-context-topic", "--max-questions", "3", "--json"], {
+            from: "user"
+          })
+        )
+      ) as {
+        planningMode: string;
+        planningContext: { notebookTitle?: string; sourceCount?: number; summary?: string; planningMode?: string };
+        suggestedPlanArguments: { topicOrId: string; questionsFile: string };
+        planningScope?: { maxQuestions?: number };
+      };
+
+      expect(contextJson.planningMode).toBe("ai_default");
+      expect(contextJson.planningScope?.maxQuestions).toBe(3);
+      expect(contextJson.suggestedPlanArguments).toEqual({
+        topicOrId: "topic-planning-context-topic",
+        questionsFile: "-",
+        maxQuestions: 3
+      });
+      expect(contextJson).not.toHaveProperty("runId");
+      expect(contextJson).not.toHaveProperty("run");
+      expect(contextJson.planningContext).toMatchObject({
+        notebookTitle: "Planning Context Notebook",
+        sourceCount: 1,
+        summary: "Planning context notebook summary.",
+        planningMode: "ai_default"
+      });
+    } finally {
+      browserAgentModule.defaultNotebookBrowserSessionFactory.createSession = originalCreateSession;
+    }
+  });
+
+  it("keeps the summary-backed plan-context -> plan stdin flow working for queued managed imports", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
+    await initializeWorkspace({ directory: workspaceRoot, force: false });
+    process.chdir(workspaceRoot);
+
+    const topic = await createTopic({
+      cwd: workspaceRoot,
+      name: "Queued summary-backed topic"
+    });
+    const attachTarget = await registerChromeEndpointTarget({
+      cwd: workspaceRoot,
+      name: "Queued Summary Chrome",
+      endpoint: "http://127.0.0.1:9222"
+    });
+    const managedNotebook = await createManagedNotebook({
+      cwd: workspaceRoot,
+      topicId: topic.topic.id,
+      name: "Queued Summary Notebook",
+      attachTargetId: attachTarget.target.id,
+      sessionFactory: createManagedOperatorSessionFactory({
+        createdNotebookUrl: "https://notebooklm.google.com/notebook/queued-summary-backed"
+      })
+    });
+
+    await importIntoManagedNotebook({
+      cwd: workspaceRoot,
+      notebookBindingId: managedNotebook.binding.id,
+      url: "https://youtube.com/watch?v=queued-summary-backed",
+      sessionFactory: createManagedOperatorSessionFactory({
+        importResults: [{ status: "queued" }]
+      })
+    });
+
+    const refreshed = await loadTopic(topic.topic.id, workspaceRoot);
+    expect(refreshed.topic.status).toBe("collecting_sources");
+    expect(refreshed.corpus.managedNotebookImportIds).toHaveLength(0);
+
+    const browserAgentModule = await import("../src/core/notebooklm/browser-agent.js");
+    const originalCreateSession = browserAgentModule.defaultNotebookBrowserSessionFactory.createSession;
+    browserAgentModule.defaultNotebookBrowserSessionFactory.createSession = async () => ({
+      async preflight() {},
+      async capturePlanningSnapshot() {
+        return {
+          notebookTitle: "Queued Summary Notebook",
+          sourceCount: 1,
+          summary: "NotebookLM summary is visible even though the managed import is still queued."
+        };
+      },
+      async askQuestion() {
+        throw new Error("unused");
+      },
+      async captureLatestAnswer() {
+        throw new Error("unused");
+      },
+      async createNotebook() {
+        throw new Error("unused");
+      },
+      async importSource() {
+        throw new Error("unused");
+      },
+      async close() {}
+    });
+
+    const originalPlannerCommand = process.env.SOURCELOOP_QUESTION_PLANNER_CMD;
+    process.env.SOURCELOOP_QUESTION_PLANNER_CMD = buildInlinePlannerCommand(5);
+
+    try {
+      const contextJson = JSON.parse(
+        await captureStdout(() =>
+          planContextCommand.parseAsync(["topic-queued-summary-backed-topic", "--max-questions", "3", "--json"], {
+            from: "user"
+          })
+        )
+      ) as {
+        planningScope?: { maxQuestions?: number };
+        planningContext: { notebookTitle?: string; sourceCount?: number; summary?: string; planningMode?: string };
+        suggestedPlanArguments: { topicOrId: string; questionsFile: string };
+      };
+
+      expect(contextJson.planningScope?.maxQuestions).toBe(3);
+      expect(contextJson.planningContext).toMatchObject({
+        notebookTitle: "Queued Summary Notebook",
+        sourceCount: 1,
+        summary: "NotebookLM summary is visible even though the managed import is still queued.",
+        planningMode: "ai_default"
+      });
+      expect(contextJson.suggestedPlanArguments).toEqual({
+        topicOrId: "topic-queued-summary-backed-topic",
+        questionsFile: "-",
+        maxQuestions: 3
+      });
+      expect(contextJson).not.toHaveProperty("runId");
+
+      const stdinQuestions = JSON.stringify({
+        questions: Array.from({ length: 5 }, (_, index) => ({
+          objective: `Question ${index + 1} objective`,
+          prompt: `Question ${index + 1} prompt`
+        }))
+      });
+
+      const stdin = new PassThrough();
+      const originalStdin = process.stdin;
+      Object.defineProperty(process, "stdin", {
+        value: stdin,
+        configurable: true
+      });
+
+      try {
+        const planInputPromise = resolvePlanInput(topic.topic.id, {
+          questionsFile: "-"
+        });
+        stdin.end(stdinQuestions);
+        const planInput = await planInputPromise;
+        const plan = await createQuestionPlan({
+          cwd: workspaceRoot,
+          ...planInput,
+          maxQuestions: contextJson.planningScope?.maxQuestions,
+          requireAiPlanner: true
+        });
+
+        expect(plan.batch.planningMode).toBe("questions_file_override");
+        expect(plan.batch.planningScope?.maxQuestions).toBe(3);
+        expect(plan.batch.questions).toHaveLength(3);
+        expect(plan.batch.questions[0]).toMatchObject({
+          objective: "Question 1 objective",
+          prompt: "Question 1 prompt"
+        });
+      } finally {
+        Object.defineProperty(process, "stdin", {
+          value: originalStdin,
+          configurable: true
+        });
+      }
+    } finally {
+      browserAgentModule.defaultNotebookBrowserSessionFactory.createSession = originalCreateSession;
+      if (originalPlannerCommand === undefined) {
+        delete process.env.SOURCELOOP_QUESTION_PLANNER_CMD;
+      } else {
+        process.env.SOURCELOOP_QUESTION_PLANNER_CMD = originalPlannerCommand;
+      }
+    }
+  });
+
   it("defaults plan question count to 10 when max-questions is omitted", async () => {
     const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
     await initializeWorkspace({ directory: workspaceRoot, force: false });
     process.chdir(workspaceRoot);
+
+    const attachTarget = await registerChromeEndpointTarget({
+      cwd: workspaceRoot,
+      name: "Default Count Chrome",
+      endpoint: "http://127.0.0.1:9222"
+    });
 
     await captureStdout(() =>
       topicCommand.parseAsync(["create", "--name", "Default Count Topic", "--json"], { from: "user" })
@@ -750,6 +1103,8 @@ describe("operator CLI workflow", () => {
             "topic-default-count-topic",
             "--url",
             "https://notebooklm.google.com/notebook/default-count",
+            "--attach-target",
+            attachTarget.target.id,
             "--json"
           ],
           { from: "user" }
@@ -775,14 +1130,52 @@ describe("operator CLI workflow", () => {
       )
     );
 
-    const planJson = JSON.parse(
-      await captureStdout(() =>
-        planCommand.parseAsync(["topic-default-count-topic", "--json"], { from: "user" })
-      )
-    ) as { batch: { questions: Array<{ id: string }>; planningScope?: { maxQuestions?: number } } };
+    const browserAgentModule = await import("../src/core/notebooklm/browser-agent.js");
+    const originalCreateSession = browserAgentModule.defaultNotebookBrowserSessionFactory.createSession;
+    const originalPlannerCommand = process.env.SOURCELOOP_QUESTION_PLANNER_CMD;
+    browserAgentModule.defaultNotebookBrowserSessionFactory.createSession = async () => ({
+      async preflight() {},
+      async capturePlanningSnapshot() {
+        return {
+          notebookTitle: "Default Count Notebook",
+          sourceCount: 1,
+          summary: "Default count notebook summary."
+        };
+      },
+      async askQuestion() {
+        throw new Error("unused");
+      },
+      async captureLatestAnswer() {
+        throw new Error("unused");
+      },
+      async createNotebook() {
+        throw new Error("unused");
+      },
+      async importSource() {
+        throw new Error("unused");
+      },
+      async close() {}
+    });
+    process.env.SOURCELOOP_QUESTION_PLANNER_CMD = buildInlinePlannerCommand(10);
 
-    expect(planJson.batch.questions).toHaveLength(DEFAULT_MAX_QUESTIONS);
-    expect(planJson.batch.planningScope?.maxQuestions).toBe(DEFAULT_MAX_QUESTIONS);
+    try {
+      const planJson = JSON.parse(
+        await captureStdout(() =>
+          planCommand.parseAsync(["topic-default-count-topic", "--json"], { from: "user" })
+        )
+      ) as { batch: { planningMode?: string; questions: Array<{ id: string }>; planningScope?: { maxQuestions?: number } } };
+
+      expect(planJson.batch.planningMode).toBe("ai_default");
+      expect(planJson.batch.questions).toHaveLength(DEFAULT_MAX_QUESTIONS);
+      expect(planJson.batch.planningScope?.maxQuestions).toBe(DEFAULT_MAX_QUESTIONS);
+    } finally {
+      browserAgentModule.defaultNotebookBrowserSessionFactory.createSession = originalCreateSession;
+      if (originalPlannerCommand === undefined) {
+        delete process.env.SOURCELOOP_QUESTION_PLANNER_CMD;
+      } else {
+        process.env.SOURCELOOP_QUESTION_PLANNER_CMD = originalPlannerCommand;
+      }
+    }
   });
 
   it("loads AI-authored questions from a JSON file during planning", async () => {
@@ -853,29 +1246,59 @@ describe("operator CLI workflow", () => {
       "utf8"
     );
 
-    const planJson = JSON.parse(
-      await captureStdout(() =>
-        planCommand.parseAsync(["topic-ai-planned-topic", "--questions-file", questionsPath, "--json"], { from: "user" })
-      )
-    ) as {
-      batch: {
-        questions: Array<{ kind: string; objective: string; prompt: string }>;
-        questionFamilies: string[];
-      };
-    };
+    const browserAgentModule = await import("../src/core/notebooklm/browser-agent.js");
+    const originalCreateSession = browserAgentModule.defaultNotebookBrowserSessionFactory.createSession;
+    browserAgentModule.defaultNotebookBrowserSessionFactory.createSession = async () => ({
+      async preflight() {},
+      async capturePlanningSnapshot() {
+        return {
+          notebookTitle: "AI Planned Notebook",
+          sourceCount: 1,
+          summary: "AI planned notebook summary."
+        };
+      },
+      async askQuestion() {
+        throw new Error("unused");
+      },
+      async captureLatestAnswer() {
+        throw new Error("unused");
+      },
+      async createNotebook() {
+        throw new Error("unused");
+      },
+      async importSource() {
+        throw new Error("unused");
+      },
+      async close() {}
+    });
 
-    expect(planJson.batch.questions).toHaveLength(2);
-    expect(planJson.batch.questionFamilies).toEqual(["core", "execution"]);
-    expect(planJson.batch.questions[0]).toMatchObject({
-      kind: "core",
-      objective: "Frame the space.",
-      prompt: "What is the actual problem space behind AI planned topic?"
-    });
-    expect(planJson.batch.questions[1]).toMatchObject({
-      kind: "execution",
-      objective: "Turn the topic into a field guide.",
-      prompt: "What sequence should a team follow to apply AI planned topic in practice?"
-    });
+    try {
+      const planJson = JSON.parse(
+        await captureStdout(() =>
+          planCommand.parseAsync(["topic-ai-planned-topic", "--questions-file", questionsPath, "--json"], { from: "user" })
+        )
+      ) as {
+        batch: {
+          questions: Array<{ kind: string; objective: string; prompt: string }>;
+          questionFamilies: string[];
+        };
+      };
+
+      expect(planJson.batch.questions).toHaveLength(2);
+      expect(planJson.batch.questionFamilies).toEqual(["core", "execution"]);
+      expect(planJson.batch.questions[0]).toMatchObject({
+        kind: "core",
+        objective: "Frame the space.",
+        prompt: "What is the actual problem space behind AI planned topic?"
+      });
+      expect(planJson.batch.questions[1]).toMatchObject({
+        kind: "execution",
+        objective: "Turn the topic into a field guide.",
+        prompt: "What sequence should a team follow to apply AI planned topic in practice?"
+      });
+    } finally {
+      browserAgentModule.defaultNotebookBrowserSessionFactory.createSession = originalCreateSession;
+    }
   });
 
   it("fails closed when an AI-authored question file contains an unsupported family", async () => {
@@ -1129,7 +1552,7 @@ describe("operator CLI workflow", () => {
     ).rejects.toThrow(new RegExp(`Invalid questions file ${questionsPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
   });
 
-  it("fails closed when planning scope removes all AI-authored questions", async () => {
+  it("accepts AI-authored question files without internal family labels", async () => {
     const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
     await initializeWorkspace({ directory: workspaceRoot, force: false });
     process.chdir(workspaceRoot);
@@ -1180,7 +1603,6 @@ describe("operator CLI workflow", () => {
         {
           questions: [
             {
-              kind: "core",
               objective: "Frame the topic.",
               prompt: "What is the core framing behind scope empty topic?"
             }
@@ -1192,16 +1614,122 @@ describe("operator CLI workflow", () => {
       "utf8"
     );
 
-    await expect(
-      planCommand.parseAsync(
-        ["topic-scope-empty-topic", "--questions-file", questionsPath, "--families", "execution", "--json"],
-        { from: "user" }
-      )
-    ).rejects.toThrow("Question planning produced no usable questions after applying the selected planning scope.");
+    const browserAgentModule = await import("../src/core/notebooklm/browser-agent.js");
+    const originalCreateSession = browserAgentModule.defaultNotebookBrowserSessionFactory.createSession;
+    browserAgentModule.defaultNotebookBrowserSessionFactory.createSession = async () => ({
+      async preflight() {},
+      async capturePlanningSnapshot() {
+        return {
+          notebookTitle: "Scope Empty Notebook",
+          sourceCount: 1,
+          summary: "Scope empty notebook summary."
+        };
+      },
+      async askQuestion() {
+        throw new Error("unused");
+      },
+      async captureLatestAnswer() {
+        throw new Error("unused");
+      },
+      async createNotebook() {
+        throw new Error("unused");
+      },
+      async importSource() {
+        throw new Error("unused");
+      },
+      async close() {}
+    });
 
-    const workspace = await loadWorkspace(workspaceRoot);
-    const vault = getVaultPaths(workspace);
-    expect(await readdir(vault.runsDir)).toHaveLength(0);
+    try {
+      const planJson = JSON.parse(
+        await captureStdout(() =>
+          planCommand.parseAsync(["topic-scope-empty-topic", "--questions-file", questionsPath, "--json"], {
+            from: "user"
+          })
+        )
+      ) as { batch: { planningMode?: string; questions: Array<{ kind?: string; objective: string; prompt: string }> } };
+
+      expect(planJson.batch.planningMode).toBe("questions_file_override");
+      expect(planJson.batch.questions).toHaveLength(1);
+      expect(planJson.batch.questions[0]).toMatchObject({
+        objective: "Frame the topic.",
+        prompt: "What is the core framing behind scope empty topic?"
+      });
+      expect(planJson.batch.questions[0]?.kind).toBeUndefined();
+    } finally {
+      browserAgentModule.defaultNotebookBrowserSessionFactory.createSession = originalCreateSession;
+    }
+  });
+
+  it("accepts AI-authored question files from stdin when --questions-file - is wired through stdin", async () => {
+    if (process.platform === "win32") {
+      return;
+    }
+
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
+    await initializeWorkspace({ directory: workspaceRoot, force: false });
+    process.chdir(workspaceRoot);
+
+    const topic = await createTopic({
+      cwd: workspaceRoot,
+      name: "Stdin questions topic"
+    });
+    const notebookBinding = await bindNotebook({
+      cwd: workspaceRoot,
+      name: "Stdin questions notebook",
+      topic: topic.topic.name,
+      topicId: topic.topic.id,
+      notebookUrl: "https://notebooklm.google.com/notebook/stdin-questions",
+      accessMode: "owner"
+    });
+    await declareNotebookSourceManifest({
+      cwd: workspaceRoot,
+      topicId: topic.topic.id,
+      notebookBindingId: notebookBinding.binding.id,
+      kind: "document-set",
+      title: "Stdin evidence set"
+    });
+
+    const stdinQuestions = JSON.stringify({
+      questions: [
+        {
+          objective: "Frame the topic from the active agent session.",
+          prompt: "What is the core framing behind stdin questions topic?"
+        }
+      ]
+    });
+
+    const stdin = new PassThrough();
+    const originalStdin = process.stdin;
+    Object.defineProperty(process, "stdin", {
+      value: stdin,
+      configurable: true
+    });
+
+    try {
+      const planInputPromise = resolvePlanInput(topic.topic.id, {
+        questionsFile: "-"
+      });
+      stdin.end(stdinQuestions);
+      const planInput = await planInputPromise;
+      const plan = await createQuestionPlan({
+        cwd: workspaceRoot,
+        ...planInput,
+        requireAiPlanner: true
+      });
+
+      expect(plan.batch.planningMode).toBe("questions_file_override");
+      expect(plan.batch.questions).toHaveLength(1);
+      expect(plan.batch.questions[0]).toMatchObject({
+        objective: "Frame the topic from the active agent session.",
+        prompt: "What is the core framing behind stdin questions topic?"
+      });
+    } finally {
+      Object.defineProperty(process, "stdin", {
+        value: originalStdin,
+        configurable: true
+      });
+    }
   });
 
   it("surfaces managed notebook setup readiness in status and doctor", async () => {
@@ -1312,6 +1840,13 @@ function createManagedOperatorSessionFactory(options: {
     async createSession(): Promise<NotebookBrowserSession> {
       return {
         async preflight() {},
+        async capturePlanningSnapshot() {
+          return {
+            notebookTitle: "Operator Managed Notebook",
+            sourceCount: 1,
+            summary: "Operator managed notebook summary."
+          };
+        },
         async askQuestion() {
           throw new Error("askQuestion is not used in managed operator workflow tests");
         },
@@ -1332,4 +1867,23 @@ function createManagedOperatorSessionFactory(options: {
       };
     }
   };
+}
+
+function buildInlinePlannerCommand(defaultCount: number): string {
+  const source = [
+    "let raw='';",
+    "process.stdin.setEncoding('utf8');",
+    "process.stdin.on('data',chunk=>raw+=chunk);",
+    "process.stdin.on('end',()=>{",
+    "const input=JSON.parse(raw);",
+    `const count=Math.max(1,input.maxQuestions??${defaultCount});`,
+    "const output={questions:Array.from({length:count},(_,index)=>({",
+    "objective:'Objective '+(index+1),",
+    "prompt:'Prompt '+(index+1)+' for '+input.context.topic",
+    "}))};",
+    "process.stdout.write(JSON.stringify(output));",
+    "});"
+  ].join("");
+
+  return `node -e ${JSON.stringify(source)}`;
 }

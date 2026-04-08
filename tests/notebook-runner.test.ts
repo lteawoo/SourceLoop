@@ -92,7 +92,7 @@ describe("NotebookLM QA run archive", () => {
     expect(runIndex).toContain("/outputs/");
     expect(questionsMarkdown).toContain(`type: questions`);
     expect(questionsMarkdown).toContain(`# ai agents market Questions`);
-    expect(questionsMarkdown).toContain("families:");
+    expect(questionsMarkdown).not.toContain("families:");
     expect(questionsMarkdown).toContain("[[runs/");
     expect(exchangeMarkdown).toContain("## NotebookLM Answer");
     expect(exchangeMarkdown).toContain("answer_source: notebooklm");
@@ -180,7 +180,7 @@ describe("NotebookLM QA run archive", () => {
     expect(runIndex).toContain(`topic: "AI agents market"`);
     expect(runIndex).toContain("[[topics/");
     expect(runIndex).toContain("[[notebooks/");
-    expect(questionsMarkdown).toContain("families:");
+    expect(questionsMarkdown).not.toContain("families:");
     expect(questionsMarkdown).toContain('output: "lecture outline"');
     expect(exchangeMarkdown).toContain(`topic: "AI agents market"`);
     expect(outputMarkdown).toContain(`format: outline`);
@@ -262,9 +262,9 @@ describe("NotebookLM QA run archive", () => {
       maxQuestions: 3,
       selectedFamilies: ["core", "execution"]
     });
-    expect(runMarkdown).toContain("Planning Scope: max 3 questions | families: core, execution");
+    expect(runMarkdown).toContain("Planning Scope: legacy template planner | max 3 questions");
     expect(questionsMarkdown).toContain("max_questions: 3");
-    expect(questionsMarkdown).toContain("selected_families:");
+    expect(questionsMarkdown).not.toContain("selected_families:");
   });
 
   it("accepts AI-authored planned questions and applies the planning scope", async () => {
@@ -587,7 +587,8 @@ describe("NotebookLM QA run archive", () => {
 
     expect(resolved).toEqual({
       topic: "topic-market-map",
-      notebookBindingId: "notebook-legacy-notebook"
+      notebookBindingId: "notebook-legacy-notebook",
+      requireAiPlanner: true
     });
   });
 
@@ -1001,5 +1002,83 @@ describe("NotebookLM QA run archive", () => {
     );
     expect(firstExchangeMarkdown).toContain("Imported answer one");
     expect(firstExchangeMarkdown).toContain("Imported source");
+  });
+
+  it("rejects loading text during latest-answer import instead of recording it as a completed exchange", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
+    await initializeWorkspace({ directory: workspaceRoot, force: false });
+
+    const binding = await bindNotebook({
+      cwd: workspaceRoot,
+      name: "Placeholder Import Notebook",
+      topic: "placeholder-import",
+      notebookUrl: "https://notebooklm.google.com/notebook/placeholder-import",
+      accessMode: "owner"
+    });
+
+    const plan = await createQuestionPlan({
+      cwd: workspaceRoot,
+      topic: "placeholder import",
+      notebookBindingId: binding.binding.id,
+      maxQuestions: 1
+    });
+
+    await expect(
+      importLatestAnswerIntoRun({
+        cwd: workspaceRoot,
+        runId: plan.run.id,
+        answer: {
+          answer: "Getting the gist...",
+          citations: [],
+          answerSource: "notebooklm"
+        }
+      })
+    ).rejects.toThrow(/loading|placeholder|answer/i);
+  });
+
+  it("marks a run incomplete when the notebook adapter returns loading text", async () => {
+    const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "sourceloop-"));
+    await initializeWorkspace({ directory: workspaceRoot, force: false });
+
+    const binding = await bindNotebook({
+      cwd: workspaceRoot,
+      name: "Placeholder Run Notebook",
+      topic: "placeholder-run",
+      notebookUrl: "https://notebooklm.google.com/notebook/placeholder-run",
+      accessMode: "owner"
+    });
+
+    const plan = await createQuestionPlan({
+      cwd: workspaceRoot,
+      topic: "placeholder run",
+      notebookBindingId: binding.binding.id,
+      maxQuestions: 1
+    });
+
+    const fixturePath = path.join(workspaceRoot, "placeholder-fixture.json");
+    await writeFile(
+      fixturePath,
+      JSON.stringify(
+        {
+          [plan.batch.questions[0]!.id]: {
+            answer: "Getting the context...",
+            citations: [{ label: "1", note: "NotebookLM loading text" }]
+          }
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
+
+    const runResult = await executeQARun({
+      cwd: workspaceRoot,
+      runId: plan.run.id,
+      adapter: await FixtureNotebookRunnerAdapter.fromFile(fixturePath)
+    });
+
+    expect(runResult.run.status).toBe("incomplete");
+    expect(runResult.run.failedQuestionId).toBe(plan.batch.questions[0]?.id);
+    expect(runResult.completedExchanges).toHaveLength(0);
   });
 });

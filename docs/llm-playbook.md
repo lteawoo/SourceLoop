@@ -46,7 +46,9 @@ The agent should avoid guessing hidden state when the CLI can report it directly
 - When asking for the topic, mention that planning defaults to 10 questions unless the user wants another count
 - If the user provided a topic but no sources, ask which sources to use before collecting or importing anything
 - When the topic is first set, confirm whether to keep the default 10-question plan or use another count
-- Prefer AI-authored topic-specific questions when the operator can generate them, and pass them into `plan` with `--questions-file`
+- Prefer `sourceloop plan-context --json` once the NotebookLM notebook summary is visible
+- Have the active agent author question JSON from that planning context, then submit it with `sourceloop plan ... --questions-file - --json`
+- Use `--questions-file` only as an active-agent or manual override input
 - Do not autonomously search the web or choose source materials unless the user explicitly asked the agent to find sources
 - Do not run `plan` unless the topic has usable evidence
 - Do not run `run` unless the topic has a bound notebook and a planned run
@@ -144,7 +146,10 @@ sourceloop notebook-source declare \
   --ref "https://youtube.com/playlist?list=<real-playlist-id>" \
   --json
 
-sourceloop plan topic-ai-agents-market --max-questions 10 --json
+# wait until the notebook-level summary body is visible in NotebookLM
+sourceloop plan-context topic-ai-agents-market --max-questions 10 --json
+# active agent authors question JSON from the emitted planning context
+sourceloop plan topic-ai-agents-market --questions-file - --json
 sourceloop run <run-id> --json
 ```
 
@@ -191,8 +196,10 @@ sourceloop notebook-import \
   --json
 
 sourceloop doctor --json
-sourceloop plan topic-ai-agents-market --max-questions 10 --json
-sourceloop plan topic-ai-agents-market --questions-file ./ai-questions.json --json
+# wait until the notebook-level summary body is visible in NotebookLM
+sourceloop plan-context topic-ai-agents-market --max-questions 10 --json
+# active agent authors question JSON from the emitted planning context
+sourceloop plan topic-ai-agents-market --questions-file - --json
 sourceloop run <run-id> --json
 ```
 
@@ -218,7 +225,9 @@ Use full-batch execution by default once the plan is created, unless the user ex
 ### Useful commands
 
 ```bash
-sourceloop plan <topic-id> --max-questions 10 --json
+sourceloop plan-context <topic-id> --max-questions 10 --json
+# active agent authors question JSON from the emitted planning context
+sourceloop plan <topic-id> --questions-file - --json
 sourceloop run <run-id> --json
 sourceloop run <run-id> --from-question <question-id> --json
 sourceloop run <run-id> --question-id <question-id> --json
@@ -269,7 +278,7 @@ The agent should keep updates short and operational:
 
 - "The topic exists, but there is no notebook binding yet. I will create a managed notebook."
 - "The notebook is bound, but there is still no usable evidence. I will import the provided sources first."
-- "The topic is ready for planning. I will generate a 5-question core and execution batch."
+- "The topic is ready for planning. I will wait for the NotebookLM summary, then generate a 5-question AI-authored batch."
 - "I will run the planned batch and collect the answers."
 - "NotebookLM can take a little while here. I will wait briefly for the result."
 - "This run is still in progress. Do you want me to keep waiting, or should I report the current state first?"

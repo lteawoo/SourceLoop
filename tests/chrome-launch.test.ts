@@ -50,6 +50,7 @@ describe("managed chrome launch", () => {
     expect(result.reusedTarget).toBe(false);
     expect(spawned).toHaveLength(1);
     expect(spawned[0]?.args).toContain(`--user-data-dir=${result.profileDirPath}`);
+    expect(spawned[0]?.args).toContain("--window-size=1440,960");
     expect(markdown).toContain("Profile Isolation: isolated");
     expect(markdown).toContain("Ownership: sourceloop_managed");
   });
